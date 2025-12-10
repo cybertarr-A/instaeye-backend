@@ -3,23 +3,18 @@ import re
 import json
 import requests
 from typing import Dict, List, Any
-from dotenv import load_dotenv
-import whisper
+from urllib.request import urlopen
+import tempfile
 
 # ----------------------------
-# Setup
+# Environment Setup
 # ----------------------------
-load_dotenv()
 ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
 IG_USER_ID = os.getenv("IG_USER_ID")
 GRAPH_BASE = "https://graph.facebook.com/v24.0"
 
-# Try loading Whisper model
-try:
-    whisper_model = whisper.load_model("base")
-except Exception as e:
-    whisper_model = None
-    print("⚠️ Whisper not available:", e)
+if not ACCESS_TOKEN or not IG_USER_ID:
+    print("⚠️ WARNING: IG_ACCESS_TOKEN or IG_USER_ID not set in environment.")
 
 
 # ----------------------------
@@ -30,11 +25,15 @@ class IGError(Exception):
 
 
 def _get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Wrapper for IG Graph GET requests with error handling."""
     params = {**params, "access_token": ACCESS_TOKEN}
-    r = requests.get(url, params=params, timeout=30)
-    if r.status_code != 200:
-        raise IGError(f"GET {url} -> {r.status_code}: {r.text}")
-    return r.json()
+
+    resp = requests.get(url, params=params, timeout=30)
+
+    if resp.status_code != 200:
+        raise IGError(f"GET {url} -> {resp.status_code}: {resp.text}")
+
+    return resp.json()
 
 
 def extract_hashtags(caption: str) -> List[str]:
@@ -43,48 +42,50 @@ def extract_hashtags(caption: str) -> List[str]:
     return re.findall(r"#(\w+)", caption)
 
 
+# ----------------------------
+# Transcript Handling (disabled in production for safety)
+# ----------------------------
 def generate_transcript_from_url(media_url: str) -> str:
-    if not whisper_model or not media_url.lower().endswith(".mp4"):
-        return ""
-
-    try:
-        import tempfile
-        from urllib.request import urlopen
-
-        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as tmp:
-            tmp.write(urlopen(media_url).read())
-            tmp.flush()
-            result = whisper_model.transcribe(tmp.name)
-            return result.get("text", "").strip()
-    except Exception as e:
-        print(f"⚠️ Transcript error: {e}")
-        return ""
+    """
+    Whisper removed for Railway (heavy model).
+    Always returns empty string to avoid errors.
+    """
+    return ""
 
 
+# ----------------------------
+# AI Placeholder Description
+# ----------------------------
 def ai_analyze_content(media_url: str) -> str:
+    """Placeholder text until vision model integrated."""
     if not media_url:
         return ""
-    return f"AI analysis placeholder for URL: {media_url.split('/')[-1]}"
+    return f"AI summary placeholder for: {media_url.split('/')[-1]}"
 
 
+# ----------------------------
+# Ranking Logic
+# ----------------------------
 def rank_top_posts(media: List[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
     def score(m):
-        insights = m.get("insights", {})
         likes = m.get("likes", 0)
-        shares = insights.get("shares", 0)
-        plays = insights.get("plays", 0)
         comments = m.get("comments", 0)
-        total = [likes, shares, plays, comments]
-        return sum(total) / 4 if any(total) else 0
+        plays = m.get("insights", {}).get("plays", 0)
+        shares = m.get("insights", {}).get("shares", 0)
+
+        total = [likes, comments, plays, shares]
+        return sum(total) / max(len(total), 1)
 
     ranked = sorted(media, key=score, reverse=True)
+
     for m in ranked:
         m["final_score"] = score(m)
+
     return ranked[:limit]
 
 
 # ----------------------------
-# OWN ACCOUNT
+# OWN ACCOUNT ANALYSIS
 # ----------------------------
 def fetch_owned_media(limit: int = 25) -> List[Dict[str, Any]]:
     url = f"{GRAPH_BASE}/{IG_USER_ID}/media"
@@ -100,127 +101,110 @@ def fetch_owned_media(limit: int = 25) -> List[Dict[str, Any]]:
     for m in data.get("data", []):
         caption = m.get("caption", "")
         hashtags = extract_hashtags(caption)
+
         insights = {}
-
         for metric in m.get("insights", {}).get("data", []):
-            name = metric.get("name")
-            if name and metric.get("values"):
-                insights[name] = metric["values"][0].get("value")
-
-        transcript = generate_transcript_from_url(m["media_url"]) if m.get("media_type") == "VIDEO" else ""
-        ai_summary = ai_analyze_content(m.get("media_url"))
+            if metric.get("values"):
+                insights[metric["name"]] = metric["values"][0].get("value", 0)
 
         posts.append({
             "id": m.get("id"),
             "type": m.get("media_type"),
             "caption": caption,
             "hashtags": hashtags,
-            "permalink": m.get("permalink"),
-            "thumbnail_url": m.get("thumbnail_url"),
-            "media_url": m.get("media_url"),
             "timestamp": m.get("timestamp"),
+            "permalink": m.get("permalink"),
+            "media_url": m.get("media_url"),
+            "thumbnail_url": m.get("thumbnail_url"),
             "likes": m.get("like_count", 0),
             "comments": m.get("comments_count", 0),
             "insights": insights,
-            "transcript": transcript,
-            "ai_summary": ai_summary
+            "transcript": "",
+            "ai_summary": ai_analyze_content(m.get("media_url"))
         })
 
     return posts
 
 
 # ----------------------------
-# OTHER CREATORS
+# OTHER CREATOR ANALYSIS
 # ----------------------------
 def fetch_other_creator(username: str, limit: int = 25) -> Dict[str, Any]:
     url = f"{GRAPH_BASE}/{IG_USER_ID}"
     fields = {
         "fields": (
             f"business_discovery.username({username}){{"
-            f"id,username,name,profile_picture_url,followers_count,follows_count,media_count,"
-            f"biography,website,"
-            f"media.limit({limit}){{id,caption,media_type,media_product_type,permalink,thumbnail_url,"
-            f"media_url,timestamp,like_count,comments_count}}"
+            f"id,username,name,profile_picture_url,followers_count,follows_count,"
+            f"media_count,biography,website,"
+            f"media.limit({limit}){{id,caption,media_type,media_product_type,"
+            f"permalink,thumbnail_url,media_url,timestamp,like_count,comments_count}}"
             f"}}"
         )
     }
+
     data = _get(url, fields)
-
     bd = data.get("business_discovery")
-    if not bd:
-        raise IGError(f"No data for @{username}")
 
+    if not bd:
+        raise IGError(f"No data found for @{username}")
+
+    # User metadata
     followers = bd.get("followers_count", 1)
     media = bd.get("media", {}).get("data", [])
 
-    total_eng = sum(m.get("like_count", 0) + m.get("comments_count", 0) for m in media)
-    engagement_rate = round((total_eng / followers * 100), 2)
+    engagement_total = sum(m.get("like_count", 0) + m.get("comments_count", 0) for m in media)
+    engagement_rate = round((engagement_total / followers) * 100, 2) if followers > 0 else 0
 
-    demographics = {
-        "audience_country": {"US": 40, "IN": 25, "BR": 15, "UK": 10, "Other": 10},
-        "audience_gender": {"male": 58, "female": 42},
-        "audience_age": {"13-17": 5, "18-24": 30, "25-34": 40, "35-44": 20, "45+": 5},
-    }
-
-    content_breakdown = {
-        "reels": sum(m["media_product_type"] == "REELS" for m in media),
-        "feed": sum(m["media_product_type"] == "FEED" for m in media),
-        "carousel": sum(m["media_product_type"] == "CAROUSEL_ALBUM" for m in media),
-    }
-
-    user = {
+    user_info = {
         "id": bd.get("id"),
         "username": bd.get("username"),
         "followers_count": followers,
         "engagement_rate": engagement_rate,
-        "demographics": demographics,
-        "content_breakdown": content_breakdown,
+        "website": bd.get("website"),
+        "bio": bd.get("biography"),
     }
 
+    # Media breakdown
     media_list = []
     for m in media:
         caption = m.get("caption", "")
         hashtags = extract_hashtags(caption)
         likes = m.get("like_count", 0)
         comments = m.get("comments_count", 0)
-        engagement = likes + comments
 
         insights = {
-            "plays": int(engagement * 4.8),
-            "reach": int(engagement * 3.9),
-            "impressions": int(engagement * 5.5),
+            "plays": int((likes + comments) * 4.8),
+            "reach": int((likes + comments) * 3.9),
+            "impressions": int((likes + comments) * 5.5),
             "saved": int(likes * 0.025),
             "shares": int(comments * 0.12),
-            "total_interactions": engagement,
-            "likes": likes,
-            "comments": comments,
         }
-
-        transcript = generate_transcript_from_url(m["media_url"]) if m.get("media_type") == "VIDEO" else ""
-        ai_summary = ai_analyze_content(m.get("media_url"))
 
         media_list.append({
             "id": m.get("id"),
-            "type": m.get("media_type"),
             "caption": caption,
             "hashtags": hashtags,
-            "permalink": m.get("permalink"),
-            "thumbnail_url": m.get("thumbnail_url"),
-            "media_url": m.get("media_url"),
+            "type": m.get("media_type"),
             "timestamp": m.get("timestamp"),
+            "permalink": m.get("permalink"),
+            "media_url": m.get("media_url"),
             "likes": likes,
             "comments": comments,
             "insights": insights,
-            "transcript": transcript,
-            "ai_summary": ai_summary,
+            "transcript": "",
+            "ai_summary": ai_analyze_content(m.get("media_url")),
         })
 
-    ranked = rank_top_posts(media_list)
-    return {"user": user, "media": ranked}
+    ranked_media = rank_top_posts(media_list)
+
+    return {
+        "user": user_info,
+        "media": ranked_media
+    }
 
 
 # ----------------------------
-# MAIN ENTRY FUNCTION
+# MAIN EXPORT FUNCTION
 # ----------------------------
 def analyze_profiles(usernames: List[str]) -> Dict[str, Any]:
     results = []
@@ -228,11 +212,11 @@ def analyze_profiles(usernames: List[str]) -> Dict[str, Any]:
     for username in usernames:
         try:
             if username.lower() == "self":
-                posts = fetch_owned_media(limit=25)
-                ranked = rank_top_posts(posts)
+                media = fetch_owned_media()
+                ranked = rank_top_posts(media)
                 results.append({"user": {"username": "self"}, "media": ranked})
             else:
-                results.append(fetch_other_creator(username=username))
+                results.append(fetch_other_creator(username))
         except Exception as e:
             results.append({"username": username, "error": str(e)})
 
