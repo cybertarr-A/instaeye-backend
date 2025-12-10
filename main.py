@@ -1,10 +1,14 @@
-from fastapi import FastAPI
-from content_ai_api import generate_content
-from image import analyze_image
-from video_analyzer import analyze_video
-from instagram_top_posts_api import get_top_posts
-from trend_engine import analyze_trend
-from app import analyze_profile   # if this handles main IG analyze
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Any, Optional
+
+from instagram_analyzer import analyze_profiles
+from content_ideas import generate_content
+from image_analyzer import analyze_image
+from video_analyzer import analyze_reel
+from top_posts import get_top_posts
+from trend_engine import analyze_industry
+   # if this handles main IG analyze
 
 app = FastAPI()
 
