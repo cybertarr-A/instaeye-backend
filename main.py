@@ -6,7 +6,7 @@ from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 from video_analyzer import analyze_reel
-from instagram_top_posts_api import get_top_posts
+from top_posts import get_top_posts
 from trend_engine import analyze_industry
 
 
