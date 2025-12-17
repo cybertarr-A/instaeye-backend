@@ -10,7 +10,7 @@ import tempfile
 # Environment Setup
 # ----------------------------
 ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_USER_ID = os.getenv("IG_USER_ID")
+IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
 GRAPH_BASE = "https://graph.facebook.com/v24.0"
 
 if not ACCESS_TOKEN or not IG_USER_ID:
