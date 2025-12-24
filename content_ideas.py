@@ -23,12 +23,12 @@ def generate_content(data: List[Dict[str, Any]]) -> Dict[str, Any]:
         data_snippet = json.dumps(data)[:15000]
 
         system_msg = """
-You are a Short-Form Content Growth Analyst.
+You are a Content Growth Analyst.
 
 Your job:
-Generate EXACTLY 10 content ideas that can rank on Reels, TikTok, and Shorts.
+Generate EXACTLY 10 content ideas that can rank on Reels.
 Use real performance patterns from the dataset provided.
-
+Make 3 titles
 Output MUST follow this exact JSON shape:
 
 {
