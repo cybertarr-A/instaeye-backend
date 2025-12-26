@@ -53,6 +53,7 @@ def analyze_frame(image_path: str) -> str:
                         "text": (
                             "Analyze this Instagram Reel frame and describe "
                             "what the video is about. Identify any promotional "
+                            "Identify the music/Audio context of the reel"
                             "intent or visible links. also analyze what is people are saying in the video and what is the audio/music and analyze them too"
                         )
                     },
