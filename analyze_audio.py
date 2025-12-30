@@ -1,60 +1,74 @@
-from fastapi import FastAPI, HTTPException
-import subprocess
-import tempfile
-import requests
 import os
 import uuid
+import requests
+import subprocess
+import tempfile
+import librosa
+import numpy as np
+from openai import OpenAI
 
-app = FastAPI()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-def run(cmd):
-    subprocess.run(cmd, shell=True, check=True)
+def download_video(media_url: str) -> str:
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    r = requests.get(media_url, stream=True, timeout=30)
+    r.raise_for_status()
+    for chunk in r.iter_content(8192):
+        tmp.write(chunk)
+    tmp.close()
+    return tmp.name
 
-@app.post("/analyze-audio")
-def analyze_audio(payload: dict):
-    media_url = payload.get("media_url")
-    if not media_url:
-        raise HTTPException(status_code=400, detail="media_url required")
-
-    uid = uuid.uuid4().hex
-    tmp_dir = tempfile.gettempdir()
-
-    video_path = f"{tmp_dir}/{uid}.mp4"
-    audio_path = f"{tmp_dir}/{uid}.wav"
-
-    # Download video
-    with requests.get(media_url, stream=True, timeout=30) as r:
-        r.raise_for_status()
-        with open(video_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-    # Extract audio
-    run(f"ffmpeg -y -i {video_path} -ac 1 -ar 16000 {audio_path}")
-
-    # Analyze loudness
-    result = subprocess.run(
-        f"ffmpeg -i {audio_path} -af astats -f null -",
-        shell=True,
-        stderr=subprocess.PIPE,
-        text=True
+def extract_audio(video_path: str) -> str:
+    audio_path = video_path.replace(".mp4", ".wav")
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-vn",
+            "-ac", "1",
+            "-ar", "44100",
+            audio_path
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=True
     )
+    return audio_path
 
-    stderr = result.stderr
-
-    is_music = "Zero crossings" not in stderr
-    rms = None
-
-    for line in stderr.splitlines():
-        if "Overall RMS level" in line:
-            rms = float(line.split(":")[-1].strip())
-
-    os.remove(video_path)
-    os.remove(audio_path)
+def extract_features(audio_path: str) -> dict:
+    y, sr = librosa.load(audio_path, sr=44100)
+    duration = librosa.get_duration(y=y, sr=sr)
+    rms = float(np.mean(librosa.feature.rms(y=y)))
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
 
     return {
-        "audio_type": "music-dominant" if is_music else "speech-dominant",
-        "rms_db": rms,
-        "hook_potential": "high" if rms and rms > -18 else "medium",
-        "recommended_use": "viral/trend" if is_music else "educational/story"
+        "duration_sec": round(duration, 2),
+        "energy": round(rms, 4),
+        "tempo_bpm": int(tempo)
     }
+
+def analyze_audio_with_ai(features: dict) -> dict:
+    prompt = f"""
+Analyze this audio and infer music context.
+
+Audio features:
+- Duration: {features['duration_sec']} seconds
+- Energy: {features['energy']}
+- Tempo: {features['tempo_bpm']} BPM
+
+Return strict JSON:
+{{
+  "music_present": true/false,
+  "mood": "...",
+  "genre": "...",
+  "context": "..."
+}}
+"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.2
+    )
+
+    return eval(response.choices[0].message.content)
