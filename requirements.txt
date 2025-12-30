@@ -2,8 +2,15 @@ fastapi
 uvicorn
 requests
 python-dotenv
-opencv-python-headless
 pydantic
 openai
 pytrends
 python-dateutil
+
+# Audio processing
+librosa
+numpy
+soundfile
+
+# Optional but recommended
+scipy
