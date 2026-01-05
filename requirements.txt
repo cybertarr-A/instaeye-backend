@@ -7,10 +7,14 @@ openai
 pytrends
 python-dateutil
 
-# Audio processing
+# Image processing (server-safe OpenCV)
+opencv-python-headless
+
+# Audio extraction
+yt-dlp
+
+# Audio processing (optional, keep only if used)
 librosa
 numpy
 soundfile
-
-# Optional but recommended
 scipy
