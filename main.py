@@ -9,6 +9,9 @@ from video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 
+# 🔥 NEW IMPORT
+from audio_pipeline import process_reel
+
 
 app = FastAPI(title="InstaEye Backend", version="1.0")
 
@@ -34,6 +37,10 @@ class ReelAnalyzeRequest(BaseModel):
     media_url: Optional[str] = None
     url: Optional[str] = None
     reel_url: Optional[str] = None
+
+
+class ReelAudioRequest(BaseModel):
+    media_url: str
 
 
 class TopPostsRequest(BaseModel):
@@ -74,6 +81,15 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
     if not url:
         raise HTTPException(status_code=400, detail="No video URL provided")
     return analyze_reel(url)
+
+
+# 🔥 3.5️⃣ Reel Audio → Transcript → Analysis (NEW)
+@app.post("/analyze-reel-audio")
+def analyze_reel_audio_api(req: ReelAudioRequest):
+    try:
+        return process_reel(req.media_url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # 4️⃣ Trend Industry Engine
