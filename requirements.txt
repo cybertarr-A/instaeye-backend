@@ -18,3 +18,5 @@ librosa
 numpy
 soundfile
 scipy
+ffmpeg-static
+
