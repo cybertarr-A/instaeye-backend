@@ -12,45 +12,90 @@ if not OPENAI_API_KEY:
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
+def _extract_transcripts(data: List[Dict[str, Any]]) -> List[str]:
+    """
+    Pull transcript text if present in merged dataset.
+    Keeps system backward-compatible.
+    """
+    transcripts = []
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        # Our normalized transcript object
+        if item.get("source") == "reel_audio_transcript":
+            text = item.get("transcript")
+            if text and isinstance(text, str):
+                transcripts.append(text.strip())
+
+    return transcripts
+
+
 def generate_content(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Generates 10 viral content ideas based on merged analytics data.
-    Called directly by FastAPI in main.py.
+    Generates EXACTLY 10 viral content ideas based on merged analytics data,
+    now enhanced with spoken-reel transcript intelligence (if available).
     """
 
     try:
-        # reduce payload size (250–500k JSON can break the model)
-        data_snippet = json.dumps(data)[:15000]
+        # ---- Extract transcript intelligence (NEW) ----
+        transcripts = _extract_transcripts(data)
 
-        system_msg = """
-You are a Content Growth Analyst.
+        transcript_block = ""
+        if transcripts:
+            joined = "\n\n---\n\n".join(transcripts[:3])  # limit noise
+            transcript_block = f"""
+IMPORTANT SPOKEN REEL TRANSCRIPTS:
+These are real words spoken in high-performing reels.
+Use them to identify hooks, narrative styles, pacing, and CTA language.
+
+TRANSCRIPTS START:
+{joined}
+TRANSCRIPTS END
+"""
+
+        # ---- Reduce payload size (unchanged) ----
+        data_snippet = json.dumps(data)[:12000]
+
+        # ---- SYSTEM PROMPT (slightly upgraded) ----
+        system_msg = f"""
+You are a Senior Content Growth Analyst.
 
 Your job:
-Generate EXACTLY 10 content ideas that can rank on Reels.
-Use real performance patterns from the dataset provided.
-Make 3 titles
+Generate EXACTLY 10 Instagram Reel content ideas that can realistically rank.
+
+Rules:
+- Use real performance patterns from the dataset
+- Prioritize SPOKEN hooks if transcripts are provided
+- Strong first 3 seconds are critical
+- Make 3 titles per idea
+- Ideas should be practical, viral, and human-sounding
+
 Output MUST follow this exact JSON shape:
 
-{
+{{
  "ideas": [
-   {
+   {{
      "id": 1,
      "titles": ["..."],
      "script": "...",
      "description": "...",
      "hashtags": ["..."]
-   }
+   }}
  ]
-}
+}}
 """
 
+        # ---- USER PROMPT (enhanced but safe) ----
         user_msg = f"""
-Analyze the performance dataset below and produce 10 highly-optimized,
-viral-ready content ideas.
+Analyze the dataset below and produce 10 highly-optimized,
+viral-ready Instagram Reel ideas.
 
-DATA START:
+{transcript_block}
+
+GENERAL PERFORMANCE DATA:
 {data_snippet}
-DATA END
 
 Return ONLY JSON. No explanation.
 """
@@ -70,14 +115,14 @@ Return ONLY JSON. No explanation.
             "Content-Type": "application/json",
         }
 
-        response = requests.post(OPENAI_URL, json=payload, headers=headers)
+        response = requests.post(OPENAI_URL, json=payload, headers=headers, timeout=60)
 
         if response.status_code != 200:
             raise Exception(f"OpenAI Error: {response.text}")
 
         content = response.json()["choices"][0]["message"]["content"]
 
-        # enforce valid JSON
+        # Enforce valid JSON
         return json.loads(content)
 
     except json.JSONDecodeError:
