@@ -22,15 +22,40 @@ if not OPENAI_API_KEY:
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # -----------------------------
+# URL NORMALIZATION (CRITICAL)
+# -----------------------------
+
+def normalize_instagram_url(url: str) -> str:
+    """
+    Instagram CDN URLs are time-limited and WILL FAIL on servers.
+    Force canonical reel/post URLs.
+    """
+    if "cdninstagram.com" in url:
+        raise ValueError(
+            "CDN URLs are not supported. "
+            "Pass an Instagram reel/post URL like "
+            "https://www.instagram.com/reel/XXXX/"
+        )
+
+    if "instagram.com" not in url:
+        raise ValueError("Invalid Instagram URL")
+
+    return url.split("?")[0]  # strip tracking params
+
+
+# -----------------------------
 # AUDIO EXTRACTION
 # -----------------------------
 
 def extract_audio(media_url: str, audio_path: str):
     """
-    Extract audio from Instagram reel / video CDN URL
+    Extract audio from Instagram reel/post URL
     """
     cmd = [
         "yt-dlp",
+        "--no-playlist",
+        "--force-ipv4",
+        "--merge-output-format", "mp4",
         "-f", "bestaudio/best",
         "--extract-audio",
         "--audio-format", "mp3",
@@ -38,7 +63,16 @@ def extract_audio(media_url: str, audio_path: str):
         media_url
     ]
 
-    subprocess.run(cmd, check=True)
+    result = subprocess.run(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp failed: {result.stderr}")
+
 
 # -----------------------------
 # OPENAI TRANSCRIPTION
@@ -55,6 +89,7 @@ def transcribe_audio(audio_path: str) -> str:
         )
 
     return transcription.text
+
 
 # -----------------------------
 # OPENAI ANALYSIS
@@ -87,6 +122,7 @@ Transcript:
 
     return response.choices[0].message.content
 
+
 # -----------------------------
 # FULL PIPELINE
 # -----------------------------
@@ -94,9 +130,12 @@ Transcript:
 def process_reel(media_url: str) -> dict:
     """
     Full pipeline:
-    video URL → audio → transcript → analysis
+    Instagram reel/post URL → audio → transcript → analysis
     """
     uid = str(uuid.uuid4())
+
+    # 🔥 CRITICAL FIX
+    media_url = normalize_instagram_url(media_url)
 
     audio_path = f"{AUDIO_DIR}/{uid}.mp3"
     transcript_path = f"{TRANSCRIPT_DIR}/{uid}.txt"
