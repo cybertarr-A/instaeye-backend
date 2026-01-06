@@ -14,7 +14,7 @@ OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 def _extract_transcripts(data: List[Dict[str, Any]]) -> List[str]:
     """
-    Pull transcript text if present in merged dataset.
+    Pull transcript_text if present in merged dataset.
     Keeps system backward-compatible.
     """
     transcripts = []
@@ -23,9 +23,8 @@ def _extract_transcripts(data: List[Dict[str, Any]]) -> List[str]:
         if not isinstance(item, dict):
             continue
 
-        # Our normalized transcript object
         if item.get("source") == "reel_audio_transcript":
-            text = item.get("transcript")
+            text = item.get("transcript_text") or item.get("transcript")
             if text and isinstance(text, str):
                 transcripts.append(text.strip())
 
@@ -34,70 +33,104 @@ def _extract_transcripts(data: List[Dict[str, Any]]) -> List[str]:
 
 def generate_content(data: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Generates EXACTLY 10 viral content ideas based on merged analytics data,
-    now enhanced with spoken-reel transcript intelligence (if available).
+    Generates EXACTLY 10 viral content ideas by analyzing
+    the FULL merged dataset coming from the Merge node.
     """
 
     try:
-        # ---- Extract transcript intelligence (NEW) ----
+        # ---- Extract spoken audio intelligence (if present) ----
         transcripts = _extract_transcripts(data)
 
         transcript_block = ""
         if transcripts:
-            joined = "\n\n---\n\n".join(transcripts[:3])  # limit noise
+            joined = "\n\n---\n\n".join(transcripts[:3])
             transcript_block = f"""
-IMPORTANT SPOKEN REEL TRANSCRIPTS:
-These are real words spoken in high-performing reels.
-Use them to identify hooks, narrative styles, pacing, and CTA language.
+SPOKEN AUDIO INTELLIGENCE (transcript_text):
 
-TRANSCRIPTS START:
+The following text comes from REAL SPOKEN AUDIO extracted from Instagram Reels.
+This is NOT caption text.
+
+Use it to infer:
+- Spoken hook phrasing
+- Verbal pacing and rhythm
+- Emotional tone in voice
+- CTA language that is actually said
+
+TRANSCRIPT_TEXT START:
 {joined}
-TRANSCRIPTS END
+TRANSCRIPT_TEXT END
 """
 
-        # ---- Reduce payload size (unchanged) ----
+        # ---- Include FULL merged dataset (not just snippets) ----
         data_snippet = json.dumps(data)[:12000]
 
-        # ---- SYSTEM PROMPT (slightly upgraded) ----
+        # ---- SYSTEM PROMPT (MERGE-NODE AWARE) ----
         system_msg = f"""
-You are a Senior Content Growth Analyst.
+You are a Senior Instagram Growth Intelligence Engine.
 
-Your job:
-Generate EXACTLY 10 Instagram Reel content ideas that can realistically rank.
+You receive a MERGED dataset from an automation workflow.
+The dataset may include:
+- Post-level performance metrics (likes, shares, plays, reach, engagement_rate)
+- Captions, hashtags, posting times
+- Video analysis (structure, pacing, format)
+- Image analysis (visual theme, emotion, composition)
+- Audio analysis with transcript_text (spoken words)
+- Industry and niche trend analysis
+- Brand and audience persona context
 
-Rules:
-- Use real performance patterns from the dataset
-- Prioritize SPOKEN hooks if transcripts are provided
-- Strong first 3 seconds are critical
-- Make 3 titles per idea
-- Ideas should be practical, viral, and human-sounding
+Your task is to analyze ALL of this data holistically
+before generating any ideas.
 
-Output MUST follow this exact JSON shape:
+Core priorities:
+1. What patterns actually correlate with high performance
+2. Spoken audio hooks and phrasing if transcript_text exists
+3. Repeated emotional, narrative, and structural patterns
+4. Visual vs audio dominance
+5. Alignment with audience intent and niche trends
 
-{{
- "ideas": [
-   {{
-     "id": 1,
-     "titles": ["..."],
-     "script": "...",
-     "description": "...",
-     "hashtags": ["..."]
-   }}
- ]
-}}
+Do NOT summarize the data.
+Do NOT describe the dataset.
+USE it to infer what the algorithm is rewarding.
 """
 
-        # ---- USER PROMPT (enhanced but safe) ----
+        # ---- USER PROMPT (FORCE FULL-MERGE ANALYSIS) ----
         user_msg = f"""
-Analyze the dataset below and produce 10 highly-optimized,
-viral-ready Instagram Reel ideas.
+Analyze the FULL merged dataset below.
+
+Your goal:
+Infer what type of content is currently winning
+for THIS niche, THIS audience, and THIS data.
+
+If transcript_text is present:
+- Treat it as ground-truth spoken language
+- Optimize hooks for how they SOUND, not how they read
 
 {transcript_block}
 
-GENERAL PERFORMANCE DATA:
+MERGED DATASET:
 {data_snippet}
 
-Return ONLY JSON. No explanation.
+After analysis, generate EXACTLY 10 Instagram Reel ideas.
+
+Each idea MUST include:
+- 3 spoken-style titles
+- A short spoken-first script
+- A description aligned with inferred intent
+- Relevant hashtags based on detected patterns
+
+Return ONLY valid JSON in this format:
+
+{{
+  "ideas": [
+    {{
+      "id": 1,
+      "titles": ["...", "...", "..."],
+      "script": "...",
+      "description": "...",
+      "hashtags": ["..."]
+    }}
+  ]
+}}
 """
 
         payload = {
@@ -115,14 +148,18 @@ Return ONLY JSON. No explanation.
             "Content-Type": "application/json",
         }
 
-        response = requests.post(OPENAI_URL, json=payload, headers=headers, timeout=60)
+        response = requests.post(
+            OPENAI_URL,
+            json=payload,
+            headers=headers,
+            timeout=60
+        )
 
         if response.status_code != 200:
             raise Exception(f"OpenAI Error: {response.text}")
 
         content = response.json()["choices"][0]["message"]["content"]
 
-        # Enforce valid JSON
         return json.loads(content)
 
     except json.JSONDecodeError:
