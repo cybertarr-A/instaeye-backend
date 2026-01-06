@@ -7,16 +7,10 @@ openai
 pytrends
 python-dateutil
 
-# Image processing (server-safe OpenCV)
+# Media & ML (Python 3.11 compatible)
 opencv-python-headless
-
-# Audio extraction
 yt-dlp
-
-# Audio processing (optional, keep only if used)
-librosa
-numpy
-soundfile
-scipy
-ffmpeg-static
-
+librosa==0.10.2.post1
+numpy==1.26.4
+scipy==1.11.4
+soundfile==0.12.1
