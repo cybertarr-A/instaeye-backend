@@ -7,9 +7,10 @@ from openai import OpenAI
 # CONFIG
 # -----------------------------
 
-AUDIO_DIR = "storage/audio"
-TRANSCRIPT_DIR = "storage/transcripts"
-ANALYSIS_DIR = "storage/analysis"
+BASE_DIR = "storage"
+AUDIO_DIR = f"{BASE_DIR}/audio"
+TRANSCRIPT_DIR = f"{BASE_DIR}/transcripts"
+ANALYSIS_DIR = f"{BASE_DIR}/analysis"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
@@ -20,6 +21,9 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
+
+FFMPEG_PATH = "/usr/bin/ffmpeg"  # Docker / Railway
+YTDLP_BIN = "yt-dlp"
 
 # -----------------------------
 # URL NORMALIZATION (CRITICAL)
@@ -33,45 +37,59 @@ def normalize_instagram_url(url: str) -> str:
     if "cdninstagram.com" in url:
         raise ValueError(
             "CDN URLs are not supported. "
-            "Pass an Instagram reel/post URL like "
+            "Use a canonical Instagram URL like "
             "https://www.instagram.com/reel/XXXX/"
         )
 
     if "instagram.com" not in url:
         raise ValueError("Invalid Instagram URL")
 
-    return url.split("?")[0]  # strip tracking params
+    return url.split("?")[0]
 
 
 # -----------------------------
-# AUDIO EXTRACTION
+# AUDIO EXTRACTION (FIXED)
 # -----------------------------
 
 def extract_audio(media_url: str, audio_path: str):
     """
-    Extract audio from Instagram reel/post URL
+    Extract audio as WAV using ffmpeg via yt-dlp.
+    This avoids DASH fragment + codec detection issues.
     """
+
+    # yt-dlp expects output TEMPLATE, not final filename
+    output_template = audio_path.replace(".wav", ".%(ext)s")
+
     cmd = [
-        "yt-dlp",
+        YTDLP_BIN,
         "--no-playlist",
         "--force-ipv4",
-        "--merge-output-format", "mp4",
+        "--prefer-ffmpeg",
+        "--ffmpeg-location", FFMPEG_PATH,
         "-f", "bestaudio/best",
         "--extract-audio",
-        "--audio-format", "mp3",
-        "-o", audio_path,
+        "--audio-format", "wav",
+        "--audio-quality", "0",
+        "-o", output_template,
         media_url
     ]
 
     result = subprocess.run(
         cmd,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {result.stderr}")
+        raise RuntimeError(
+            "yt-dlp failed\n"
+            f"STDOUT:\n{result.stdout}\n"
+            f"STDERR:\n{result.stderr}"
+        )
+
+    if not os.path.exists(audio_path):
+        raise RuntimeError("Audio extraction succeeded but WAV file not found")
 
 
 # -----------------------------
@@ -88,7 +106,7 @@ def transcribe_audio(audio_path: str) -> str:
             model="gpt-4o-mini-transcribe"
         )
 
-    return transcription.text
+    return transcription.text.strip()
 
 
 # -----------------------------
@@ -120,7 +138,7 @@ Transcript:
         temperature=0.3
     )
 
-    return response.choices[0].message.content
+    return response.choices[0].message.content.strip()
 
 
 # -----------------------------
@@ -130,14 +148,13 @@ Transcript:
 def process_reel(media_url: str) -> dict:
     """
     Full pipeline:
-    Instagram reel/post URL → audio → transcript → analysis
+    Instagram URL → WAV audio → transcript → analysis
     """
     uid = str(uuid.uuid4())
 
-    # 🔥 CRITICAL FIX
     media_url = normalize_instagram_url(media_url)
 
-    audio_path = f"{AUDIO_DIR}/{uid}.mp3"
+    audio_path = f"{AUDIO_DIR}/{uid}.wav"
     transcript_path = f"{TRANSCRIPT_DIR}/{uid}.txt"
     analysis_path = f"{ANALYSIS_DIR}/{uid}.json"
 
@@ -157,6 +174,7 @@ def process_reel(media_url: str) -> dict:
     return {
         "status": "success",
         "audio_id": uid,
+        "audio_format": "wav",
         "transcript_text": transcript_text,
         "analysis": analysis
     }
