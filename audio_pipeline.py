@@ -7,10 +7,9 @@ from openai import OpenAI
 # CONFIG
 # -----------------------------
 
-BASE_DIR = "storage"
-AUDIO_DIR = f"{BASE_DIR}/audio"
-TRANSCRIPT_DIR = f"{BASE_DIR}/transcripts"
-ANALYSIS_DIR = f"{BASE_DIR}/analysis"
+AUDIO_DIR = "storage/audio"
+TRANSCRIPT_DIR = "storage/transcripts"
+ANALYSIS_DIR = "storage/analysis"
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
@@ -22,7 +21,7 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-FFMPEG_PATH = "/usr/bin/ffmpeg"  # Docker / Railway
+FFMPEG_BIN = "ffmpeg"
 YTDLP_BIN = "yt-dlp"
 
 # -----------------------------
@@ -53,43 +52,61 @@ def normalize_instagram_url(url: str) -> str:
 
 def extract_audio(media_url: str, audio_path: str):
     """
-    Extract audio as WAV using ffmpeg via yt-dlp.
-    This avoids DASH fragment + codec detection issues.
+    Reliable Instagram audio extraction:
+    1) Download MP4 via yt-dlp (no postprocessing)
+    2) Extract audio using ffmpeg directly
     """
 
-    # yt-dlp expects output TEMPLATE, not final filename
-    output_template = audio_path.replace(".wav", ".%(ext)s")
+    tmp_mp4 = audio_path.replace(".wav", ".mp4")
 
-    cmd = [
+    # Step 1: Download video only
+    ytdlp_cmd = [
         YTDLP_BIN,
         "--no-playlist",
         "--force-ipv4",
-        "--prefer-ffmpeg",
-        "--ffmpeg-location", FFMPEG_PATH,
-        "-f", "bestaudio/best",
-        "--extract-audio",
-        "--audio-format", "wav",
-        "--audio-quality", "0",
-        "-o", output_template,
+        "-f", "best",
+        "-o", tmp_mp4,
         media_url
     ]
 
-    result = subprocess.run(
-        cmd,
+    ytdlp = subprocess.run(
+        ytdlp_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
     )
 
-    if result.returncode != 0:
+    if ytdlp.returncode != 0:
         raise RuntimeError(
-            "yt-dlp failed\n"
-            f"STDOUT:\n{result.stdout}\n"
-            f"STDERR:\n{result.stderr}"
+            "yt-dlp download failed\n"
+            f"STDERR:\n{ytdlp.stderr}"
         )
 
-    if not os.path.exists(audio_path):
-        raise RuntimeError("Audio extraction succeeded but WAV file not found")
+    # Step 2: Extract audio safely with ffmpeg
+    ffmpeg_cmd = [
+        FFMPEG_BIN,
+        "-y",
+        "-i", tmp_mp4,
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        audio_path
+    ]
+
+    ffmpeg = subprocess.run(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if ffmpeg.returncode != 0:
+        raise RuntimeError(
+            "ffmpeg audio extraction failed\n"
+            f"STDERR:\n{ffmpeg.stderr}"
+        )
+
+    os.remove(tmp_mp4)
 
 
 # -----------------------------
@@ -148,7 +165,7 @@ Transcript:
 def process_reel(media_url: str) -> dict:
     """
     Full pipeline:
-    Instagram URL → WAV audio → transcript → analysis
+    Instagram reel/post URL → audio → transcript → analysis
     """
     uid = str(uuid.uuid4())
 
