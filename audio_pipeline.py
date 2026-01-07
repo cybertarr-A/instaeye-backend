@@ -19,54 +19,32 @@ os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set")
+
+if not RAPIDAPI_KEY:
+    raise RuntimeError("RAPIDAPI_KEY is not set")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 FFMPEG_BIN = "ffmpeg"
-YTDLP_BIN = "yt-dlp"
 
-# 🔴 CHANGE THIS TO YOUR REAL HOST
-SHAZAM_API_BASE = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
-
-# -----------------------------
-# URL NORMALIZATION
-# -----------------------------
-
-def normalize_instagram_url(url: str) -> str:
-    if "cdninstagram.com" in url:
-        raise ValueError("Use canonical Instagram reel/post URL, not CDN")
-
-    if "instagram.com" not in url:
-        raise ValueError("Invalid Instagram URL")
-
-    return url.split("?")[0]
-
+# RapidAPI Shazam endpoint
+SHAZAM_RECOGNIZE_URL = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
 
 # -----------------------------
-# AUDIO EXTRACTION
+# AUDIO EXTRACTION FROM CDN URL
 # -----------------------------
 
-def extract_audio(media_url: str, wav_path: str):
-    tmp_mp4 = wav_path.replace(".wav", ".mp4")
-
-    # Download reel
-    ytdlp_cmd = [
-        YTDLP_BIN,
-        "--no-playlist",
-        "--force-ipv4",
-        "-f", "best",
-        "-o", tmp_mp4,
-        media_url
-    ]
-
-    subprocess.run(ytdlp_cmd, check=True)
-
-    # Extract WAV (Shazam-friendly)
+def extract_audio_from_url(media_url: str, wav_path: str):
+    """
+    Extract audio directly from CDN MP4 URL (no yt-dlp, no scraping)
+    """
     ffmpeg_cmd = [
         FFMPEG_BIN, "-y",
-        "-i", tmp_mp4,
+        "-i", media_url,
         "-vn",
         "-ac", "1",
         "-ar", "44100",
@@ -75,46 +53,44 @@ def extract_audio(media_url: str, wav_path: str):
 
     subprocess.run(ffmpeg_cmd, check=True)
 
-    os.remove(tmp_mp4)
-
 
 # -----------------------------
-# SHAZAM SONG DETECTION (FILE UPLOAD)
+# SHAZAM SONG DETECTION (AUDIO URL MODE)
 # -----------------------------
 
-def detect_song_from_audio(wav_path: str) -> dict:
-    url = f"{SHAZAM_API_BASE}/shazam/recognize/"
+def detect_song_from_audio_url(media_url: str) -> dict:
+    headers = {
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": "shazam-api6.p.rapidapi.com"
+    }
 
-    with open(wav_path, "rb") as f:
-        files = {
-            "file": ("audio.wav", f, "audio/wav")
-        }
+    params = {"url": media_url}
 
-        response = requests.post(url, files=files, timeout=60)
+    r = requests.get(
+        SHAZAM_RECOGNIZE_URL,
+        headers=headers,
+        params=params,
+        timeout=60
+    )
 
-    if response.status_code != 200:
+    if r.status_code != 200:
         return {
             "status": "error",
-            "code": response.status_code,
-            "message": response.text
+            "code": r.status_code,
+            "message": r.text
         }
 
-    data = response.json()
+    data = r.json()
 
-    # Normalize common Shazam-style responses
-    track = (
-        data.get("track")
-        or data.get("result")
-        or data
-    )
+    track = data.get("track") or data.get("result") or data
 
     if not track:
         return {"status": "no_match"}
 
     return {
         "status": "matched",
-        "title": track.get("title") or track.get("track_name"),
-        "artist": track.get("artist") or track.get("subtitle"),
+        "title": track.get("title"),
+        "artist": track.get("subtitle") or track.get("artist"),
         "raw": data
     }
 
@@ -165,17 +141,16 @@ Transcript:
 
 def process_reel(media_url: str) -> dict:
     uid = str(uuid.uuid4())
-    media_url = normalize_instagram_url(media_url)
 
     wav_path = f"{AUDIO_DIR}/{uid}.wav"
     transcript_path = f"{TRANSCRIPT_DIR}/{uid}.txt"
     analysis_path = f"{ANALYSIS_DIR}/{uid}.json"
 
-    # 1. Extract audio
-    extract_audio(media_url, wav_path)
+    # 1. Extract audio from CDN
+    extract_audio_from_url(media_url, wav_path)
 
-    # 2. Detect song
-    song = detect_song_from_audio(wav_path)
+    # 2. Detect song via Shazam URL endpoint
+    song = detect_song_from_audio_url(media_url)
 
     # 3. Transcribe
     transcript_text = transcribe_audio(wav_path)
