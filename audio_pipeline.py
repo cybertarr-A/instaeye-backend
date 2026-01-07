@@ -28,7 +28,7 @@ FFMPEG_BIN = "ffmpeg"
 YTDLP_BIN = "yt-dlp"
 
 # 🔴 CHANGE THIS TO YOUR REAL HOST
-SHAZAM_API_BASE = "https://YOUR_HOST"
+SHAZAM_API_BASE = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
 
 # -----------------------------
 # URL NORMALIZATION
