@@ -1,7 +1,6 @@
 import os
 import uuid
 import subprocess
-import base64
 import requests
 from openai import OpenAI
 
@@ -9,29 +8,27 @@ from openai import OpenAI
 # CONFIG
 # -----------------------------
 
-AUDIO_DIR = "storage/audio"
-RAW_DIR = "storage/raw"
-TRANSCRIPT_DIR = "storage/transcripts"
-ANALYSIS_DIR = "storage/analysis"
+BASE_DIR = os.getcwd()
+
+AUDIO_DIR = os.path.join(BASE_DIR, "storage/audio")
+TRANSCRIPT_DIR = os.path.join(BASE_DIR, "storage/transcripts")
+ANALYSIS_DIR = os.path.join(BASE_DIR, "storage/analysis")
 
 os.makedirs(AUDIO_DIR, exist_ok=True)
-os.makedirs(RAW_DIR, exist_ok=True)
 os.makedirs(TRANSCRIPT_DIR, exist_ok=True)
 os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is not set")
-
-if not RAPIDAPI_KEY:
-    raise RuntimeError("RAPIDAPI_KEY is not set")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 FFMPEG_BIN = "ffmpeg"
 YTDLP_BIN = "yt-dlp"
+
+# 🔴 CHANGE THIS TO YOUR REAL HOST
+SHAZAM_API_BASE = "https://YOUR_HOST"
 
 # -----------------------------
 # URL NORMALIZATION
@@ -51,16 +48,10 @@ def normalize_instagram_url(url: str) -> str:
 # AUDIO EXTRACTION
 # -----------------------------
 
-def extract_audio(media_url: str, wav_path: str, raw_path: str):
-    """
-    1) Download MP4
-    2) Extract WAV for transcription
-    3) Extract RAW PCM for Shazam
-    """
-
+def extract_audio(media_url: str, wav_path: str):
     tmp_mp4 = wav_path.replace(".wav", ".mp4")
 
-    # Download video
+    # Download reel
     ytdlp_cmd = [
         YTDLP_BIN,
         "--no-playlist",
@@ -70,66 +61,61 @@ def extract_audio(media_url: str, wav_path: str, raw_path: str):
         media_url
     ]
 
-    ytdlp = subprocess.run(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if ytdlp.returncode != 0:
-        raise RuntimeError("yt-dlp failed:\n" + ytdlp.stderr)
+    subprocess.run(ytdlp_cmd, check=True)
 
-    # WAV for transcription (16k)
-    ffmpeg_wav = [
-        FFMPEG_BIN, "-y", "-i", tmp_mp4,
-        "-vn", "-ac", "1", "-ar", "16000",
+    # Extract WAV (Shazam-friendly)
+    ffmpeg_cmd = [
+        FFMPEG_BIN, "-y",
+        "-i", tmp_mp4,
+        "-vn",
+        "-ac", "1",
+        "-ar", "44100",
         wav_path
     ]
 
-    if subprocess.run(ffmpeg_wav).returncode != 0:
-        raise RuntimeError("ffmpeg wav extraction failed")
-
-    # RAW PCM for Shazam (44.1k s16le)
-    ffmpeg_raw = [
-        FFMPEG_BIN, "-y", "-i", tmp_mp4,
-        "-vn", "-ac", "1", "-ar", "44100",
-        "-f", "s16le", "-t", "5",
-        raw_path
-    ]
-
-    if subprocess.run(ffmpeg_raw).returncode != 0:
-        raise RuntimeError("ffmpeg raw extraction failed")
+    subprocess.run(ffmpeg_cmd, check=True)
 
     os.remove(tmp_mp4)
 
 
 # -----------------------------
-# SHAZAM SONG DETECTION
+# SHAZAM SONG DETECTION (FILE UPLOAD)
 # -----------------------------
 
-def detect_song(raw_audio_path: str) -> dict:
-    with open(raw_audio_path, "rb") as f:
-        b64_audio = base64.b64encode(f.read()).decode()
+def detect_song_from_audio(wav_path: str) -> dict:
+    url = f"{SHAZAM_API_BASE}/shazam/recognize/"
 
-    url = "https://shazam.p.rapidapi.com/songs/v2/detect"
+    with open(wav_path, "rb") as f:
+        files = {
+            "file": ("audio.wav", f, "audio/wav")
+        }
 
-    headers = {
-        "content-type": "text/plain",
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": "shazam.p.rapidapi.com"
-    }
+        response = requests.post(url, files=files, timeout=60)
 
-    resp = requests.post(url, headers=headers, data=b64_audio, timeout=60)
+    if response.status_code != 200:
+        return {
+            "status": "error",
+            "code": response.status_code,
+            "message": response.text
+        }
 
-    if resp.status_code != 200:
-        return {"status": "error", "reason": resp.text}
+    data = response.json()
 
-    data = resp.json()
-    track = data.get("track")
+    # Normalize common Shazam-style responses
+    track = (
+        data.get("track")
+        or data.get("result")
+        or data
+    )
 
     if not track:
         return {"status": "no_match"}
 
     return {
         "status": "matched",
-        "title": track.get("title"),
-        "artist": track.get("subtitle"),
-        "album": track.get("sections", [{}])[0].get("metadata", [{}])[0].get("text")
+        "title": track.get("title") or track.get("track_name"),
+        "artist": track.get("artist") or track.get("subtitle"),
+        "raw": data
     }
 
 
@@ -182,17 +168,16 @@ def process_reel(media_url: str) -> dict:
     media_url = normalize_instagram_url(media_url)
 
     wav_path = f"{AUDIO_DIR}/{uid}.wav"
-    raw_path = f"{RAW_DIR}/{uid}.raw"
     transcript_path = f"{TRANSCRIPT_DIR}/{uid}.txt"
     analysis_path = f"{ANALYSIS_DIR}/{uid}.json"
 
     # 1. Extract audio
-    extract_audio(media_url, wav_path, raw_path)
+    extract_audio(media_url, wav_path)
 
     # 2. Detect song
-    song = detect_song(raw_path)
+    song = detect_song_from_audio(wav_path)
 
-    # 3. Transcribe speech
+    # 3. Transcribe
     transcript_text = transcribe_audio(wav_path)
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_text)
