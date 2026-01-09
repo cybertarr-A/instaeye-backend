@@ -53,9 +53,19 @@ def extract_audio_from_url(media_url: str, wav_path: str):
         wav_path
     ]
 
-    proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{proc.stderr}")
+
+    # validate audio file
+    if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 15000:
+        raise RuntimeError("Audio extraction failed or file too small")
 
 
 # -----------------------------
@@ -63,31 +73,45 @@ def extract_audio_from_url(media_url: str, wav_path: str):
 # -----------------------------
 
 def detect_song_from_audio_file(wav_path: str) -> dict:
-    with open(wav_path, "rb") as f:
-        files = {"file": ("audio.wav", f, "audio/wav")}
+    try:
+        with open(wav_path, "rb") as f:
+            files = {
+                "file": ("audio.wav", f, "audio/wav"),
+                "audio": f  # some APIs expect this field
+            }
 
-        r = requests.post(
-            SHAZAM_RECOGNIZE_URL,
-            headers=SHAZAM_HEADERS,
-            files=files,
-            timeout=60
-        )
+            r = requests.post(
+                SHAZAM_RECOGNIZE_URL,
+                headers=SHAZAM_HEADERS,
+                files=files,
+                timeout=60
+            )
 
-    if r.status_code != 200:
-        return {"status": "error", "code": r.status_code, "message": r.text}
+        if r.status_code != 200:
+            return {
+                "status": "error",
+                "code": r.status_code,
+                "message": r.text
+            }
 
-    data = r.json()
-    track = data.get("track") or data.get("result") or data
+        data = r.json()
+        track = data.get("track") or data.get("result") or data
 
-    if not track:
-        return {"status": "no_match"}
+        if not isinstance(track, dict):
+            return {"status": "no_match"}
 
-    return {
-        "status": "matched",
-        "title": track.get("title"),
-        "artist": track.get("subtitle") or track.get("artist"),
-        "shazam_url": track.get("url"),
-    }
+        return {
+            "status": "matched",
+            "title": track.get("title"),
+            "artist": track.get("subtitle") or track.get("artist"),
+            "shazam_url": track.get("url"),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 
 # -----------------------------
