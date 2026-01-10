@@ -1,7 +1,6 @@
 import os
 import uuid
 import subprocess
-import base64
 import requests
 from openai import OpenAI
 
@@ -21,13 +20,8 @@ os.makedirs(ANALYSIS_DIR, exist_ok=True)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-if not all([OPENAI_API_KEY, RAPIDAPI_KEY, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET]):
-    raise RuntimeError("Missing required environment variables")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 FFMPEG_BIN = "ffmpeg"
 
@@ -35,7 +29,7 @@ FFMPEG_BIN = "ffmpeg"
 SHAZAM_RECOGNIZE_URL = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
 
 SHAZAM_HEADERS = {
-    "X-RapidAPI-Key": RAPIDAPI_KEY,
+    "X-RapidAPI-Key": RAPIDAPI_KEY or "",
     "X-RapidAPI-Host": "shazam-api6.p.rapidapi.com"
 }
 
@@ -53,18 +47,32 @@ def extract_audio_from_url(media_url: str, wav_path: str):
         wav_path
     ]
 
-    proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(
+        ffmpeg_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{proc.stderr}")
 
+    if not os.path.exists(wav_path) or os.path.getsize(wav_path) < 15000:
+        raise RuntimeError("Audio extraction failed or file too small")
+
 
 # -----------------------------
-# SHAZAM SONG DETECTION (POST FILE)
+# SHAZAM SONG DETECTION
 # -----------------------------
 
 def detect_song_from_audio_file(wav_path: str) -> dict:
+    if not RAPIDAPI_KEY:
+        return {"status": "error", "message": "RAPIDAPI_KEY not set"}
+
     with open(wav_path, "rb") as f:
-        files = {"file": ("audio.wav", f, "audio/wav")}
+        files = {
+            "file": ("audio.wav", f, "audio/wav")
+        }
 
         r = requests.post(
             SHAZAM_RECOGNIZE_URL,
@@ -74,13 +82,21 @@ def detect_song_from_audio_file(wav_path: str) -> dict:
         )
 
     if r.status_code != 200:
-        return {"status": "error", "code": r.status_code, "message": r.text}
+        return {
+            "status": "error",
+            "code": r.status_code,
+            "message": r.text
+        }
 
-    data = r.json()
-    track = data.get("track") or data.get("result") or data
+    try:
+        data = r.json()
+    except Exception:
+        return {"status": "error", "message": "Shazam returned non-JSON response"}
 
-    if not track:
-        return {"status": "no_match"}
+    track = data.get("track") or data.get("result")
+
+    if not track or not isinstance(track, dict):
+        return {"status": "no_match", "raw": data}
 
     return {
         "status": "matched",
@@ -91,64 +107,13 @@ def detect_song_from_audio_file(wav_path: str) -> dict:
 
 
 # -----------------------------
-# SPOTIFY AUTH
-# -----------------------------
-
-def get_spotify_access_token() -> str:
-    auth = base64.b64encode(
-        f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
-    ).decode()
-
-    r = requests.post(
-        "https://accounts.spotify.com/api/token",
-        headers={"Authorization": f"Basic {auth}"},
-        data={"grant_type": "client_credentials"},
-        timeout=30
-    )
-
-    r.raise_for_status()
-    return r.json()["access_token"]
-
-
-# -----------------------------
-# SPOTIFY SEARCH
-# -----------------------------
-
-def find_spotify_track(title: str, artist: str) -> dict:
-    token = get_spotify_access_token()
-
-    query = f"track:{title} artist:{artist}"
-
-    r = requests.get(
-        "https://api.spotify.com/v1/search",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"q": query, "type": "track", "limit": 1},
-        timeout=30
-    )
-
-    if r.status_code != 200:
-        return {"status": "error", "message": r.text}
-
-    items = r.json().get("tracks", {}).get("items", [])
-
-    if not items:
-        return {"status": "not_found"}
-
-    track = items[0]
-
-    return {
-        "status": "found",
-        "spotify_url": track["external_urls"]["spotify"],
-        "preview_url": track.get("preview_url"),
-        "album_art": track["album"]["images"][0]["url"] if track["album"]["images"] else None
-    }
-
-
-# -----------------------------
 # OPENAI TRANSCRIPTION
 # -----------------------------
 
 def transcribe_audio(audio_path: str) -> str:
+    if not client:
+        return ""
+
     with open(audio_path, "rb") as audio_file:
         transcription = client.audio.transcriptions.create(
             file=audio_file,
@@ -162,6 +127,9 @@ def transcribe_audio(audio_path: str) -> str:
 # -----------------------------
 
 def analyze_transcript(transcript_text: str) -> str:
+    if not client or not transcript_text:
+        return "{}"
+
     prompt = f"""
 Return STRICT JSON with:
 - topic
@@ -201,17 +169,12 @@ def process_reel(media_url: str) -> dict:
     # 2. Shazam detection
     song = detect_song_from_audio_file(wav_path)
 
-    # 3. Spotify enrichment
-    spotify = None
-    if song.get("status") == "matched":
-        spotify = find_spotify_track(song["title"], song["artist"])
-
-    # 4. Transcribe
+    # 3. Transcribe
     transcript_text = transcribe_audio(wav_path)
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_text)
 
-    # 5. Analyze
+    # 4. Analyze
     analysis = analyze_transcript(transcript_text)
     with open(analysis_path, "w", encoding="utf-8") as f:
         f.write(analysis)
@@ -220,7 +183,6 @@ def process_reel(media_url: str) -> dict:
         "status": "success",
         "audio_id": uid,
         "song_detection": song,
-        "spotify": spotify,
         "transcript_text": transcript_text,
         "analysis": analysis
     }
