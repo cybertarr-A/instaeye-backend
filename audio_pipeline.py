@@ -21,7 +21,13 @@ os.makedirs(ANALYSIS_DIR, exist_ok=True)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set")
+
+if not RAPIDAPI_KEY:
+    raise RuntimeError("RAPIDAPI_KEY is not set")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 FFMPEG_BIN = "ffmpeg"
 
@@ -29,7 +35,7 @@ FFMPEG_BIN = "ffmpeg"
 SHAZAM_RECOGNIZE_URL = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
 
 SHAZAM_HEADERS = {
-    "X-RapidAPI-Key": RAPIDAPI_KEY or "",
+    "X-RapidAPI-Key": RAPIDAPI_KEY,
     "X-RapidAPI-Host": "shazam-api6.p.rapidapi.com"
 }
 
@@ -38,6 +44,9 @@ SHAZAM_HEADERS = {
 # -----------------------------
 
 def extract_audio_from_url(media_url: str, wav_path: str):
+    """
+    Extract audio directly from CDN MP4 URL (no yt-dlp, no scraping)
+    """
     ffmpeg_cmd = [
         FFMPEG_BIN, "-y",
         "-i", media_url,
@@ -62,24 +71,18 @@ def extract_audio_from_url(media_url: str, wav_path: str):
 
 
 # -----------------------------
-# SHAZAM SONG DETECTION
+# SHAZAM SONG DETECTION (URL MODE)
 # -----------------------------
 
-def detect_song_from_audio_file(wav_path: str) -> dict:
-    if not RAPIDAPI_KEY:
-        return {"status": "error", "message": "RAPIDAPI_KEY not set"}
+def detect_song_from_audio_url(media_url: str) -> dict:
+    params = {"url": media_url}
 
-    with open(wav_path, "rb") as f:
-        files = {
-            "file": ("audio.wav", f, "audio/wav")
-        }
-
-        r = requests.post(
-            SHAZAM_RECOGNIZE_URL,
-            headers=SHAZAM_HEADERS,
-            files=files,
-            timeout=60
-        )
+    r = requests.get(
+        SHAZAM_RECOGNIZE_URL,
+        headers=SHAZAM_HEADERS,
+        params=params,
+        timeout=60
+    )
 
     if r.status_code != 200:
         return {
@@ -96,13 +99,13 @@ def detect_song_from_audio_file(wav_path: str) -> dict:
     track = data.get("track") or data.get("result")
 
     if not track or not isinstance(track, dict):
-        return {"status": "no_match", "raw": data}
+        return {"status": "no_match"}
 
     return {
         "status": "matched",
         "title": track.get("title"),
         "artist": track.get("subtitle") or track.get("artist"),
-        "shazam_url": track.get("url"),
+        "shazam_url": track.get("url")  # ✅ OFFICIAL SHAZAM LINK
     }
 
 
@@ -111,9 +114,6 @@ def detect_song_from_audio_file(wav_path: str) -> dict:
 # -----------------------------
 
 def transcribe_audio(audio_path: str) -> str:
-    if not client:
-        return ""
-
     with open(audio_path, "rb") as audio_file:
         transcription = client.audio.transcriptions.create(
             file=audio_file,
@@ -127,9 +127,6 @@ def transcribe_audio(audio_path: str) -> str:
 # -----------------------------
 
 def analyze_transcript(transcript_text: str) -> str:
-    if not client or not transcript_text:
-        return "{}"
-
     prompt = f"""
 Return STRICT JSON with:
 - topic
@@ -159,22 +156,22 @@ Transcript:
 def process_reel(media_url: str) -> dict:
     uid = str(uuid.uuid4())
 
-    wav_path = os.path.join(AUDIO_DIR, f"{uid}.wav")
-    transcript_path = os.path.join(TRANSCRIPT_DIR, f"{uid}.txt")
-    analysis_path = os.path.join(ANALYSIS_DIR, f"{uid}.json")
+    wav_path = f"{AUDIO_DIR}/{uid}.wav"
+    transcript_path = f"{TRANSCRIPT_DIR}/{uid}.txt"
+    analysis_path = f"{ANALYSIS_DIR}/{uid}.json"
 
-    # 1. Extract audio
+    # 1. Extract audio from CDN
     extract_audio_from_url(media_url, wav_path)
 
-    # 2. Shazam detection
-    song = detect_song_from_audio_file(wav_path)
+    # 2. Detect song via Shazam (URL mode)
+    song = detect_song_from_audio_url(media_url)
 
-    # 3. Transcribe
+    # 3. Transcribe speech
     transcript_text = transcribe_audio(wav_path)
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_text)
 
-    # 4. Analyze
+    # 4. Analyze transcript
     analysis = analyze_transcript(transcript_text)
     with open(analysis_path, "w", encoding="utf-8") as f:
         f.write(analysis)
@@ -182,7 +179,7 @@ def process_reel(media_url: str) -> dict:
     return {
         "status": "success",
         "audio_id": uid,
-        "song_detection": song,
+        "song_detection": song,   # ✅ includes shazam_url
         "transcript_text": transcript_text,
         "analysis": analysis
     }
