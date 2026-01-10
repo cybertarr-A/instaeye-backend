@@ -31,68 +31,47 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 
 FFMPEG_BIN = "ffmpeg"
 
+# RapidAPI Shazam endpoint
 SHAZAM_RECOGNIZE_URL = "https://shazam-api6.p.rapidapi.com/shazam/recognize/"
+
 SHAZAM_HEADERS = {
     "X-RapidAPI-Key": RAPIDAPI_KEY,
     "X-RapidAPI-Host": "shazam-api6.p.rapidapi.com"
 }
 
 # -----------------------------
-# AUDIO EXTRACTION (MP3)
+# AUDIO EXTRACTION FROM CDN URL
 # -----------------------------
 
-def extract_audio_mp3_from_url(media_url: str, mp3_path: str):
+def extract_audio_from_url(media_url: str, wav_path: str):
     ffmpeg_cmd = [
         FFMPEG_BIN, "-y",
         "-i", media_url,
         "-vn",
         "-ac", "1",
         "-ar", "44100",
-        "-codec:a", "libmp3lame",
-        mp3_path
+        wav_path
     ]
 
-    proc = subprocess.run(
-        ffmpeg_cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
-    )
-
+    proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed:\n{proc.stderr}")
 
-    if not os.path.exists(mp3_path) or os.path.getsize(mp3_path) < 15000:
-        raise RuntimeError("Audio extraction failed or file too small")
-
 
 # -----------------------------
-# TEMP FILE UPLOAD (PUBLIC URL)
+# SHAZAM SONG DETECTION (POST FILE)
 # -----------------------------
 
-def upload_temp_audio(mp3_path: str) -> str:
-    with open(mp3_path, "rb") as f:
-        r = requests.post("https://file.io", files={"file": f}, timeout=60)
+def detect_song_from_audio_file(wav_path: str) -> dict:
+    with open(wav_path, "rb") as f:
+        files = {"file": ("audio.wav", f, "audio/wav")}
 
-    if r.status_code != 200 or not r.json().get("success"):
-        raise RuntimeError("Temp upload failed")
-
-    return r.json()["link"]
-
-
-# -----------------------------
-# SHAZAM SONG DETECTION (URL MODE)
-# -----------------------------
-
-def detect_song_from_audio_url(audio_url: str) -> dict:
-    params = {"url": audio_url}
-
-    r = requests.get(
-        SHAZAM_RECOGNIZE_URL,
-        headers=SHAZAM_HEADERS,
-        params=params,
-        timeout=60
-    )
+        r = requests.post(
+            SHAZAM_RECOGNIZE_URL,
+            headers=SHAZAM_HEADERS,
+            files=files,
+            timeout=60
+        )
 
     if r.status_code != 200:
         return {"status": "error", "code": r.status_code, "message": r.text}
@@ -100,7 +79,7 @@ def detect_song_from_audio_url(audio_url: str) -> dict:
     data = r.json()
     track = data.get("track") or data.get("result") or data
 
-    if not isinstance(track, dict):
+    if not track:
         return {"status": "no_match"}
 
     return {
@@ -137,6 +116,7 @@ def get_spotify_access_token() -> str:
 
 def find_spotify_track(title: str, artist: str) -> dict:
     token = get_spotify_access_token()
+
     query = f"track:{title} artist:{artist}"
 
     r = requests.get(
@@ -150,6 +130,7 @@ def find_spotify_track(title: str, artist: str) -> dict:
         return {"status": "error", "message": r.text}
 
     items = r.json().get("tracks", {}).get("items", [])
+
     if not items:
         return {"status": "not_found"}
 
@@ -210,30 +191,27 @@ Transcript:
 def process_reel(media_url: str) -> dict:
     uid = str(uuid.uuid4())
 
-    mp3_path = os.path.join(AUDIO_DIR, f"{uid}.mp3")
+    wav_path = os.path.join(AUDIO_DIR, f"{uid}.wav")
     transcript_path = os.path.join(TRANSCRIPT_DIR, f"{uid}.txt")
     analysis_path = os.path.join(ANALYSIS_DIR, f"{uid}.json")
 
     # 1. Extract audio
-    extract_audio_mp3_from_url(media_url, mp3_path)
+    extract_audio_from_url(media_url, wav_path)
 
-    # 2. Upload to temp public URL
-    audio_url = upload_temp_audio(mp3_path)
+    # 2. Shazam detection
+    song = detect_song_from_audio_file(wav_path)
 
-    # 3. Shazam detection
-    song = detect_song_from_audio_url(audio_url)
-
-    # 4. Spotify enrichment
+    # 3. Spotify enrichment
     spotify = None
     if song.get("status") == "matched":
         spotify = find_spotify_track(song["title"], song["artist"])
 
-    # 5. Transcribe
-    transcript_text = transcribe_audio(mp3_path)
+    # 4. Transcribe
+    transcript_text = transcribe_audio(wav_path)
     with open(transcript_path, "w", encoding="utf-8") as f:
         f.write(transcript_text)
 
-    # 6. Analyze
+    # 5. Analyze
     analysis = analyze_transcript(transcript_text)
     with open(analysis_path, "w", encoding="utf-8") as f:
         f.write(analysis)
