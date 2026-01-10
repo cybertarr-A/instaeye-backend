@@ -1,6 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Any, Optional
+import traceback
 
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
@@ -9,7 +10,7 @@ from video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 
-# 🔥 NEW IMPORT
+# 🔥 AUDIO PIPELINE
 from audio_pipeline import process_reel
 
 
@@ -79,17 +80,29 @@ def analyze_image_api(req: ImageAnalyzeRequest):
 def analyze_reel_api(req: ReelAnalyzeRequest):
     url = req.video_url or req.media_url or req.url or req.reel_url
     if not url:
-        raise HTTPException(status_code=400, detail="No video URL provided")
+        return {
+            "status": "error",
+            "message": "No video URL provided"
+        }
     return analyze_reel(url)
 
 
-# 🔥 3.5️⃣ Reel Audio → Transcript → Analysis (NEW)
+# 🔥 3.5️⃣ Reel Audio → Transcript → Analysis (FIXED FOR n8n)
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
-        return process_reel(req.media_url)
+        result = process_reel(req.media_url)
+        return result
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print("AUDIO PIPELINE ERROR:")
+        traceback.print_exc()
+
+        return {
+            "status": "error",
+            "stage": "audio_pipeline",
+            "message": str(e)
+        }
 
 
 # 4️⃣ Trend Industry Engine
