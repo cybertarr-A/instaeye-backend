@@ -13,8 +13,11 @@ from trend_engine import analyze_industry
 # 🔥 AUDIO PIPELINE
 from audio_pipeline import process_reel
 
+# 🔥 HOOK ANALYZER ROUTER (NEW)
+from hook_analyzer import router as hook_router
 
-app = FastAPI(title="InstaEye Backend", version="1.0")
+
+app = FastAPI(title="InstaEye Backend", version="1.1")
 
 
 # ============================
@@ -87,7 +90,7 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
     return analyze_reel(url)
 
 
-# 🔥 3.5️⃣ Reel Audio → Transcript → Analysis (FIXED FOR n8n)
+# 🔥 3.5️⃣ Reel Audio → Transcript → Analysis
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
@@ -121,3 +124,14 @@ def top_posts_api(req: TopPostsRequest):
 @app.post("/generate-content-ideas")
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
+
+
+# ============================
+# 🔥 HOOK ANALYZER ROUTES
+# ============================
+
+# This adds:
+# POST /analyze-hook
+# (from hook_analyzer.py)
+
+app.include_router(hook_router)
