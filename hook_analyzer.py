@@ -1,4 +1,4 @@
-import os, uuid, subprocess, requests, base64, json
+import os, uuid, subprocess, requests, base64
 import cv2
 import numpy as np
 
@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
 
-# ---------------- CONFIG ----------------
+# ================= CONFIG =================
 
 BASE = os.path.join(os.getcwd(), "storage")
 VID = os.path.join(BASE, "videos")
@@ -30,14 +30,18 @@ SHAZAM_HEADERS = {
     "x-rapidapi-host": "shazam-api6.p.rapidapi.com"
 }
 
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+
 router = APIRouter()
 
-# ---------------- MODELS ----------------
+# ================= MODELS =================
 
 class HookRequest(BaseModel):
     cdn_url: str
 
-# ---------------- UTILS ----------------
+# ================= UTILS =================
 
 def download_video(url):
     path = os.path.join(VID, f"{uuid.uuid4()}.mp4")
@@ -46,33 +50,37 @@ def download_video(url):
         raise Exception("Video download failed")
 
     with open(path, "wb") as f:
-        for c in r.iter_content(1024*1024):
-            if c: f.write(c)
+        for c in r.iter_content(1024 * 1024):
+            if c:
+                f.write(c)
     return path
 
 
 def extract_5s_video(video):
     out = os.path.join(CLIP, f"clip_{uuid.uuid4()}.mp4")
-    subprocess.run([FFMPEG, "-y", "-i", video, "-t", "5", "-c:v", "copy", "-c:a", "copy", out],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video, "-t", "5", "-c:v", "copy", "-c:a", "copy", out],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+    )
     return out
 
 
 def extract_5s_audio(video):
     out = os.path.join(AUD, f"audio_{uuid.uuid4()}.wav")
-    subprocess.run([
-        FFMPEG, "-y", "-i", video, "-t", "5",
-        "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", out
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video, "-t", "5",
+         "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", out],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+    )
     return out
 
 
 def extract_frames(video):
     cap = cv2.VideoCapture(video)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frames = []
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
 
-    for sec in [0,1,2,3,4]:
+    frames = []
+    for sec in [0, 1, 2, 3, 4]:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * sec))
         ok, frame = cap.read()
         if ok:
@@ -83,26 +91,45 @@ def extract_frames(video):
     return frames
 
 
-def motion_score(video):
+def video_metrics(video):
     cap = cv2.VideoCapture(video)
     ret, prev = cap.read()
-    if not ret: return 0
+    if not ret:
+        return {}
 
-    prev = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
-    score = 0
-    count = 0
+    prev_gray = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+
+    motion = []
+    brightness = []
+    contrast = []
+    face_count = 0
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        diff = cv2.absdiff(prev, gray)
-        score += np.mean(diff)
-        prev = gray
-        count += 1
+
+        diff = cv2.absdiff(prev_gray, gray)
+        motion.append(np.mean(diff))
+
+        brightness.append(np.mean(gray))
+        contrast.append(np.std(gray))
+
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        face_count += len(faces)
+
+        prev_gray = gray
 
     cap.release()
-    return round(score / max(count,1), 2)
+
+    return {
+        "motion_intensity": round(float(np.mean(motion)), 2),
+        "avg_brightness": round(float(np.mean(brightness)), 2),
+        "avg_contrast": round(float(np.mean(contrast)), 2),
+        "face_detections": int(face_count)
+    }
 
 
 def transcribe_audio(audio):
@@ -111,7 +138,7 @@ def transcribe_audio(audio):
             file=f,
             model="gpt-4o-transcribe"
         )
-    return tr.text
+    return tr.text.strip()
 
 
 def shazam_detect(audio):
@@ -133,39 +160,44 @@ def shazam_detect(audio):
     }
 
 
-def analyze_text_and_frames(transcript, frames):
-    images = []
+def ai_hook_analysis(transcript, frames, metrics):
+    imgs = []
     for f in frames:
         with open(f, "rb") as img:
-            images.append({
+            imgs.append({
                 "type": "input_image",
                 "image_base64": base64.b64encode(img.read()).decode()
             })
 
     prompt = f"""
-Analyze hook strength:
+You are analyzing first 5 seconds of a social media reel.
+
 Transcript: {transcript}
 
-Evaluate:
-- emotion
+Video metrics:
+{metrics}
+
+Score hook strength 0-100 and explain:
+- emotional impact
 - curiosity
-- urgency
-- visual attraction
-Return JSON with score 0-100 and reasons.
+- visual punch
+- clarity
+
+Return JSON only.
 """
 
     res = client.responses.create(
         model="gpt-4.1-mini",
         input=[{
             "role": "user",
-            "content": [{"type": "input_text", "text": prompt}] + images
+            "content": [{"type": "input_text", "text": prompt}] + imgs
         }]
     )
 
     return res.output_text
 
 
-# ---------------- API ----------------
+# ================= API =================
 
 @router.post("/analyze-hook")
 def analyze_hook(req: HookRequest):
@@ -176,22 +208,22 @@ def analyze_hook(req: HookRequest):
         audio = extract_5s_audio(video)
 
         frames = extract_frames(clip)
-        motion = motion_score(clip)
+        metrics = video_metrics(clip)
 
         transcript = transcribe_audio(audio)
 
-        shazam = None
-        if len(transcript.strip()) < 5:   # likely music
-            shazam = shazam_detect(audio)
+        music = None
+        if len(transcript) < 5:
+            music = shazam_detect(audio)
 
-        ai_hook = analyze_text_and_frames(transcript, frames)
+        ai_analysis = ai_hook_analysis(transcript, frames, metrics)
 
         return {
             "status": "ok",
-            "motion_score": motion,
+            "video_metrics": metrics,
             "transcript": transcript,
-            "music_detected": shazam,
-            "ai_hook_analysis": ai_hook
+            "music_detected": music,
+            "ai_hook_analysis": ai_analysis
         }
 
     except Exception as e:
