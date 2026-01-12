@@ -80,7 +80,7 @@ def extract_frames(video):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
 
     frames = []
-    for sec in [0, 1, 2, 3, 4]:
+    for sec in [0, 2, 4]:   # fewer frames = safer payload
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(fps * sec))
         ok, frame = cap.read()
         if ok:
@@ -164,20 +164,22 @@ def ai_hook_analysis(transcript, frames, metrics):
     imgs = []
     for f in frames:
         with open(f, "rb") as img:
+            b64 = base64.b64encode(img.read()).decode()
             imgs.append({
                 "type": "input_image",
-                "image_base64": base64.b64encode(img.read()).decode()
+                "image_url": f"data:image/jpeg;base64,{b64}"
             })
 
     prompt = f"""
-You are analyzing first 5 seconds of a social media reel.
+You are analyzing the first 5 seconds of a social media reel.
 
-Transcript: {transcript}
+Transcript:
+{transcript}
 
 Video metrics:
 {metrics}
 
-Score hook strength 0-100 and explain:
+Score hook strength from 0–100 and explain:
 - emotional impact
 - curiosity
 - visual punch
