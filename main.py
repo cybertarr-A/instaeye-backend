@@ -13,9 +13,8 @@ from trend_engine import analyze_industry
 # 🔥 AUDIO PIPELINE
 from audio_pipeline import process_reel
 
-# 🔥 HOOK ANALYZER ROUTER (NEW)
-from hook_analyzer import router as hook_router
-
+from media_splitter import router as split_router
+app.include_router(split_router)
 
 app = FastAPI(title="InstaEye Backend", version="1.1")
 
