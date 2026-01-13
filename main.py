@@ -9,12 +9,15 @@ from image_analyzer import analyze_image
 from video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
+from media_splitter import router as split_router
 
 # 🔥 AUDIO PIPELINE
 from audio_pipeline import process_reel
 
 # 🔥 MEDIA SPLITTER ROUTER
 from media_splitter import router as split_router
+
+app.include_router(split_router)
 
 
 # ============================
