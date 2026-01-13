@@ -13,10 +13,22 @@ from trend_engine import analyze_industry
 # 🔥 AUDIO PIPELINE
 from audio_pipeline import process_reel
 
+# 🔥 MEDIA SPLITTER ROUTER
 from media_splitter import router as split_router
-app.include_router(split_router)
+
+
+# ============================
+# APP INIT
+# ============================
 
 app = FastAPI(title="InstaEye Backend", version="1.1")
+
+
+# ============================
+# REGISTER ROUTERS
+# ============================
+
+app.include_router(split_router)   # /split-media-5s
 
 
 # ============================
@@ -123,14 +135,3 @@ def top_posts_api(req: TopPostsRequest):
 @app.post("/generate-content-ideas")
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
-
-
-# ============================
-# 🔥 HOOK ANALYZER ROUTES
-# ============================
-
-# This adds:
-# POST /analyze-hook
-# (from hook_analyzer.py)
-
-app.include_router(hook_router)
