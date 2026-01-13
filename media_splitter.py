@@ -3,6 +3,7 @@ import os, uuid, subprocess, requests, zipfile, tempfile
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 # ================= CONFIG =================
 
@@ -100,3 +101,10 @@ def split_media_api(req: SplitRequest):
 
     except Exception as e:
         raise HTTPException(500, str(e))
+        
+@router.get("/files/{filename}")
+def get_file(filename: str):
+    path = os.path.join(OUT, filename)
+    if not os.path.exists(path):
+        raise HTTPException(404, "File not found")
+    return FileResponse(path)
