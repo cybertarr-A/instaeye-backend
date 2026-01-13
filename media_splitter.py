@@ -1,6 +1,7 @@
-import os, uuid, subprocess, requests
+import os, uuid, subprocess, requests, zipfile, tempfile
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ================= CONFIG =================
@@ -38,7 +39,7 @@ def download_video(url):
     return path
 
 
-def split_media(video_path):
+def split_and_zip(video_path):
 
     uid = str(uuid.uuid4())
 
@@ -50,52 +51,37 @@ def split_media(video_path):
 
     # ---- first 5 sec video ----
     subprocess.run([
-        FFMPEG, "-y",
-        "-i", video_path,
-        "-t", "5",
-        "-c", "copy",
-        intro_video
+        FFMPEG, "-y", "-i", video_path, "-t", "5", "-c", "copy", intro_video
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     # ---- remaining video ----
     subprocess.run([
-        FFMPEG, "-y",
-        "-i", video_path,
-        "-ss", "5",
-        "-c", "copy",
-        rest_video
+        FFMPEG, "-y", "-i", video_path, "-ss", "5", "-c", "copy", rest_video
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     # ---- first 5 sec audio ----
     subprocess.run([
-        FFMPEG, "-y",
-        "-i", video_path,
-        "-t", "5",
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-ac", "1",
-        intro_audio
+        FFMPEG, "-y", "-i", video_path, "-t", "5", "-vn",
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", intro_audio
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     # ---- remaining audio ----
     subprocess.run([
-        FFMPEG, "-y",
-        "-i", video_path,
-        "-ss", "5",
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-ac", "1",
-        rest_audio
+        FFMPEG, "-y", "-i", video_path, "-ss", "5", "-vn",
+        "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", rest_audio
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
-    return {
-        "intro_video_5s": intro_video,
-        "intro_audio_5s": intro_audio,
-        "rest_video": rest_video,
-        "rest_audio": rest_audio
-    }
+    # ---- zip all outputs ----
+    zip_path = os.path.join(OUT, f"{uid}_media_parts.zip")
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(intro_video, "intro_5s_video.mp4")
+        z.write(intro_audio, "intro_5s_audio.wav")
+        z.write(rest_video, "rest_video.mp4")
+        z.write(rest_audio, "rest_audio.wav")
+
+    return zip_path
+
 
 # ================= API =================
 
@@ -104,12 +90,13 @@ def split_media_api(req: SplitRequest):
 
     try:
         video = download_video(req.cdn_url)
-        outputs = split_media(video)
+        zip_file = split_and_zip(video)
 
-        return {
-            "status": "ok",
-            **outputs
-        }
+        return FileResponse(
+            zip_file,
+            media_type="application/zip",
+            filename="media_parts.zip"
+        )
 
     except Exception as e:
         raise HTTPException(500, str(e))
