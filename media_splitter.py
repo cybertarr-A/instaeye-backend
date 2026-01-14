@@ -18,9 +18,10 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 if not PUBLIC_BASE_URL:
     raise RuntimeError("PUBLIC_BASE_URL env var not set")
 
-# Ephemeral token store (in-memory)
+TOKEN_TTL_SECONDS = 300  # 5 minutes
+
+# In-memory token store (OK for now, Redis later if needed)
 EPHEMERAL_TOKENS: Dict[str, float] = {}
-TOKEN_TTL_SECONDS = 350  # URL lifetime
 
 router = APIRouter()
 
@@ -35,7 +36,6 @@ def create_token() -> str:
     token = str(uuid.uuid4())
     EPHEMERAL_TOKENS[token] = time.time() + TOKEN_TTL_SECONDS
     return token
-
 
 def validate_token(token: str) -> bool:
     exp = EPHEMERAL_TOKENS.get(token)
@@ -62,15 +62,14 @@ def download_video(url: str) -> Path:
 
     return tmp_video
 
-
 def split_media(video_path: Path) -> str:
     request_id = str(uuid.uuid4())
     job_dir = Path(f"/tmp/job_{request_id}")
     job_dir.mkdir(parents=True, exist_ok=True)
 
     intro_video = job_dir / "intro_5s_video.mp4"
-    rest_video  = job_dir / "rest_video.mp4"
     intro_audio = job_dir / "intro_5s_audio.wav"
+    rest_video  = job_dir / "rest_video.mp4"
     rest_audio  = job_dir / "rest_audio.wav"
 
     subprocess.run(
@@ -105,23 +104,31 @@ def split_media_api(req: SplitRequest):
         video_path = download_video(req.cdn_url)
         request_id = split_media(video_path)
 
-        token = create_token()
+        token_video = create_token()
+        token_audio = create_token()
         base = PUBLIC_BASE_URL.rstrip("/")
 
         return {
             "status": "ok",
             "request_id": request_id,
+
             "intro_video_url": (
                 f"{base}/ephemeral-media/"
-                f"{request_id}/intro_5s_video.mp4?token={token}"
+                f"{request_id}/intro_5s_video.mp4?token={token_video}"
             ),
+
+            "intro_audio_url": (
+                f"{base}/ephemeral-media/"
+                f"{request_id}/intro_5s_audio.wav?token={token_audio}"
+            ),
+
             "ttl_seconds": TOKEN_TTL_SECONDS
         }
 
     except Exception as e:
         raise HTTPException(500, str(e))
 
-# ================= EPHEMERAL CDN =================
+# ================= EPHEMERAL MEDIA =================
 
 @router.get("/ephemeral-media/{request_id}/{filename}")
 def serve_ephemeral_media(request_id: str, filename: str, token: str):
@@ -132,8 +139,10 @@ def serve_ephemeral_media(request_id: str, filename: str, token: str):
     if not file_path.exists():
         raise HTTPException(404, "File not found")
 
+    media_type = "video/mp4" if filename.endswith(".mp4") else "audio/wav"
+
     def stream():
         with open(file_path, "rb") as f:
             yield from f
 
-    return StreamingResponse(stream(), media_type="video/mp4")
+    return StreamingResponse(stream(), media_type=media_type)
