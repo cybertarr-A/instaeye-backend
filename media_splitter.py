@@ -9,6 +9,7 @@ from typing import Dict
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 # ================= CONFIG =================
 
@@ -158,4 +159,11 @@ def serve_ephemeral_media(request_id: str, filename: str, token: str):
         with open(file_path, "rb") as f:
             yield from f
 
-    return StreamingResponse(stream(), media_type=media_type)
+from fastapi.responses import FileResponse
+
+return FileResponse(
+    file_path,
+    media_type=media_type,
+    filename=filename
+)
+
