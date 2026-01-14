@@ -20,7 +20,7 @@ if not PUBLIC_BASE_URL:
 
 # Ephemeral token store (in-memory)
 EPHEMERAL_TOKENS: Dict[str, float] = {}
-TOKEN_TTL_SECONDS = 90  # URL lifetime
+TOKEN_TTL_SECONDS = 350  # URL lifetime
 
 router = APIRouter()
 
