@@ -1,89 +1,139 @@
 import os
 import uuid
+import time
 import subprocess
 import requests
-import shutil
 from pathlib import Path
+from typing import Dict
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # ================= CONFIG =================
 
 FFMPEG = "ffmpeg"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+
+if not PUBLIC_BASE_URL:
+    raise RuntimeError("PUBLIC_BASE_URL env var not set")
+
+# Ephemeral token store (in-memory)
+EPHEMERAL_TOKENS: Dict[str, float] = {}
+TOKEN_TTL_SECONDS = 90  # URL lifetime
+
 router = APIRouter()
 
-# ================= MODEL =================
+# ================= MODELS =================
 
 class SplitRequest(BaseModel):
     cdn_url: str
-    user_id: str
 
-# ================= CORE =================
+# ================= TOKEN UTILS =================
+
+def create_token() -> str:
+    token = str(uuid.uuid4())
+    EPHEMERAL_TOKENS[token] = time.time() + TOKEN_TTL_SECONDS
+    return token
+
+
+def validate_token(token: str) -> bool:
+    exp = EPHEMERAL_TOKENS.get(token)
+    if not exp:
+        return False
+    if time.time() > exp:
+        EPHEMERAL_TOKENS.pop(token, None)
+        return False
+    return True
+
+# ================= MEDIA UTILS =================
+
+def download_video(url: str) -> Path:
+    tmp_video = Path("/tmp") / f"src_{uuid.uuid4()}.mp4"
+
+    r = requests.get(url, stream=True, timeout=30)
+    if r.status_code != 200:
+        raise Exception("Video download failed")
+
+    with open(tmp_video, "wb") as f:
+        for chunk in r.iter_content(1024 * 1024):
+            if chunk:
+                f.write(chunk)
+
+    return tmp_video
+
+
+def split_media(video_path: Path) -> str:
+    request_id = str(uuid.uuid4())
+    job_dir = Path(f"/tmp/job_{request_id}")
+    job_dir.mkdir(parents=True, exist_ok=True)
+
+    intro_video = job_dir / "intro_5s_video.mp4"
+    rest_video  = job_dir / "rest_video.mp4"
+    intro_audio = job_dir / "intro_5s_audio.wav"
+    rest_audio  = job_dir / "rest_audio.wav"
+
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video_path, "-t", "5", "-c", "copy", intro_video],
+        check=True
+    )
+
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video_path, "-ss", "5", "-c", "copy", rest_video],
+        check=True
+    )
+
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video_path, "-t", "5", "-vn",
+         "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", intro_audio],
+        check=True
+    )
+
+    subprocess.run(
+        [FFMPEG, "-y", "-i", video_path, "-ss", "5", "-vn",
+         "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", rest_audio],
+        check=True
+    )
+
+    return request_id
+
+# ================= API =================
 
 @router.post("/split-media-5s")
 def split_media_api(req: SplitRequest):
-
-    request_id = str(uuid.uuid4())
-    workdir = Path(f"/tmp/job_{request_id}")
-
     try:
-        # create isolated temp workspace
-        workdir.mkdir(parents=True, exist_ok=True)
+        video_path = download_video(req.cdn_url)
+        request_id = split_media(video_path)
 
-        input_video = workdir / "input.mp4"
+        token = create_token()
+        base = PUBLIC_BASE_URL.rstrip("/")
 
-        # ---------- STREAM DOWNLOAD ----------
-        r = requests.get(req.cdn_url, stream=True, timeout=30)
-        if r.status_code != 200:
-            raise Exception("Video download failed")
-
-        with open(input_video, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
-                if chunk:
-                    f.write(chunk)
-
-        # ---------- SPLIT VIDEO ----------
-        subprocess.run(
-            [FFMPEG, "-y", "-i", str(input_video), "-t", "5",
-             str(workdir / "intro_5s_video.mp4")],
-            check=True
-        )
-
-        subprocess.run(
-            [FFMPEG, "-y", "-i", str(input_video), "-ss", "5",
-             str(workdir / "rest_video.mp4")],
-            check=True
-        )
-
-        # ---------- SPLIT AUDIO ----------
-        subprocess.run(
-            [FFMPEG, "-y", "-i", str(input_video), "-t", "5", "-vn",
-             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-             str(workdir / "intro_5s_audio.wav")],
-            check=True
-        )
-
-        subprocess.run(
-            [FFMPEG, "-y", "-i", str(input_video), "-ss", "5", "-vn",
-             "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
-             str(workdir / "rest_audio.wav")],
-            check=True
-        )
-
-        # ---------- RETURN INTERNAL PATHS ONLY ----------
         return {
             "status": "ok",
             "request_id": request_id,
-            "paths": {
-                "intro_video": str(workdir / "intro_5s_video.mp4"),
-                "intro_audio": str(workdir / "intro_5s_audio.wav"),
-                "rest_video":  str(workdir / "rest_video.mp4"),
-                "rest_audio":  str(workdir / "rest_audio.wav"),
-            }
+            "intro_video_url": (
+                f"{base}/ephemeral-media/"
+                f"{request_id}/intro_5s_video.mp4?token={token}"
+            ),
+            "ttl_seconds": TOKEN_TTL_SECONDS
         }
 
     except Exception as e:
-        # hard cleanup on failure
-        shutil.rmtree(workdir, ignore_errors=True)
         raise HTTPException(500, str(e))
+
+# ================= EPHEMERAL CDN =================
+
+@router.get("/ephemeral-media/{request_id}/{filename}")
+def serve_ephemeral_media(request_id: str, filename: str, token: str):
+    if not validate_token(token):
+        raise HTTPException(403, "Expired or invalid token")
+
+    file_path = Path(f"/tmp/job_{request_id}") / filename
+    if not file_path.exists():
+        raise HTTPException(404, "File not found")
+
+    def stream():
+        with open(file_path, "rb") as f:
+            yield from f
+
+    return StreamingResponse(stream(), media_type="video/mp4")
