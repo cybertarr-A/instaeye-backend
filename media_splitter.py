@@ -62,6 +62,7 @@ def download_video(url: str) -> Path:
 
     return tmp_video
 
+
 def split_media(video_path: Path) -> str:
     request_id = str(uuid.uuid4())
     job_dir = Path(f"/tmp/job_{request_id}")
@@ -72,29 +73,77 @@ def split_media(video_path: Path) -> str:
     rest_video  = job_dir / "rest_video.mp4"
     rest_audio  = job_dir / "rest_audio.wav"
 
+    # ============================
+    # INTRO VIDEO (Gemini-safe)
+    # ============================
     subprocess.run(
-        [FFMPEG, "-y", "-i", video_path, "-t", "5", "-c", "copy", intro_video],
+        [
+            FFMPEG, "-y",
+            "-i", str(video_path),
+            "-t", "5",
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-profile:v", "baseline",
+            "-level", "3.0",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-an",
+            str(intro_video)
+        ],
         check=True
     )
 
+    # ============================
+    # REST VIDEO (fast copy)
+    # ============================
     subprocess.run(
-        [FFMPEG, "-y", "-i", video_path, "-ss", "5", "-c", "copy", rest_video],
+        [
+            FFMPEG, "-y",
+            "-i", str(video_path),
+            "-ss", "5",
+            "-c", "copy",
+            str(rest_video)
+        ],
         check=True
     )
 
+    # ============================
+    # INTRO AUDIO
+    # ============================
     subprocess.run(
-        [FFMPEG, "-y", "-i", video_path, "-t", "5", "-vn",
-         "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", intro_audio],
+        [
+            FFMPEG, "-y",
+            "-i", str(video_path),
+            "-t", "5",
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            str(intro_audio)
+        ],
         check=True
     )
 
+    # ============================
+    # REST AUDIO
+    # ============================
     subprocess.run(
-        [FFMPEG, "-y", "-i", video_path, "-ss", "5", "-vn",
-         "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", rest_audio],
+        [
+            FFMPEG, "-y",
+            "-i", str(video_path),
+            "-ss", "5",
+            "-vn",
+            "-acodec", "pcm_s16le",
+            "-ar", "16000",
+            "-ac", "1",
+            str(rest_audio)
+        ],
         check=True
     )
 
     return request_id
+
 
 # ================= API =================
 
