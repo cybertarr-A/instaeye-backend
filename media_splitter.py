@@ -18,7 +18,7 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
 if not PUBLIC_BASE_URL:
     raise RuntimeError("PUBLIC_BASE_URL env var not set")
 
-TOKEN_TTL_SECONDS = 300  # 5 minutes
+TOKEN_TTL_SECONDS = 600  # 10 minutes
 
 # In-memory token store (OK for now, Redis later for scale)
 EPHEMERAL_TOKENS: Dict[str, float] = {}
