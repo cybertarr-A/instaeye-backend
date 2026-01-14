@@ -7,9 +7,8 @@ from pathlib import Path
 from typing import Dict
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 # ================= CONFIG =================
 
@@ -21,7 +20,7 @@ if not PUBLIC_BASE_URL:
 
 TOKEN_TTL_SECONDS = 600  # 10 minutes
 
-# In-memory token store (OK for now, Redis later for scale)
+# In-memory token store (OK for now, Redis later)
 EPHEMERAL_TOKENS: Dict[str, float] = {}
 
 router = APIRouter()
@@ -111,7 +110,7 @@ def split_media_api(req: SplitRequest):
             "status": "ok",
             "request_id": request_id,
 
-            # INTRO (5s)
+            # INTRO
             "intro_video_url": (
                 f"{base}/ephemeral-media/{request_id}/intro_5s_video.mp4"
                 f"?token={create_token()}"
@@ -121,7 +120,7 @@ def split_media_api(req: SplitRequest):
                 f"?token={create_token()}"
             ),
 
-            # REST OF VIDEO
+            # REST
             "rest_video_url": (
                 f"{base}/ephemeral-media/{request_id}/rest_video.mp4"
                 f"?token={create_token()}"
@@ -155,15 +154,8 @@ def serve_ephemeral_media(request_id: str, filename: str, token: str):
     else:
         media_type = "application/octet-stream"
 
-    def stream():
-        with open(file_path, "rb") as f:
-            yield from f
-
-from fastapi.responses import FileResponse
-
-return FileResponse(
-    file_path,
-    media_type=media_type,
-    filename=filename
-)
-
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=filename
+    )
