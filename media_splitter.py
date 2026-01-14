@@ -20,7 +20,7 @@ if not PUBLIC_BASE_URL:
 
 TOKEN_TTL_SECONDS = 300  # 5 minutes
 
-# In-memory token store (OK for now, Redis later if needed)
+# In-memory token store (OK for now, Redis later for scale)
 EPHEMERAL_TOKENS: Dict[str, float] = {}
 
 router = APIRouter()
@@ -104,22 +104,30 @@ def split_media_api(req: SplitRequest):
         video_path = download_video(req.cdn_url)
         request_id = split_media(video_path)
 
-        token_video = create_token()
-        token_audio = create_token()
         base = PUBLIC_BASE_URL.rstrip("/")
 
         return {
             "status": "ok",
             "request_id": request_id,
 
+            # INTRO (5s)
             "intro_video_url": (
-                f"{base}/ephemeral-media/"
-                f"{request_id}/intro_5s_video.mp4?token={token_video}"
+                f"{base}/ephemeral-media/{request_id}/intro_5s_video.mp4"
+                f"?token={create_token()}"
+            ),
+            "intro_audio_url": (
+                f"{base}/ephemeral-media/{request_id}/intro_5s_audio.wav"
+                f"?token={create_token()}"
             ),
 
-            "intro_audio_url": (
-                f"{base}/ephemeral-media/"
-                f"{request_id}/intro_5s_audio.wav?token={token_audio}"
+            # REST OF VIDEO
+            "rest_video_url": (
+                f"{base}/ephemeral-media/{request_id}/rest_video.mp4"
+                f"?token={create_token()}"
+            ),
+            "rest_audio_url": (
+                f"{base}/ephemeral-media/{request_id}/rest_audio.wav"
+                f"?token={create_token()}"
             ),
 
             "ttl_seconds": TOKEN_TTL_SECONDS
@@ -139,7 +147,12 @@ def serve_ephemeral_media(request_id: str, filename: str, token: str):
     if not file_path.exists():
         raise HTTPException(404, "File not found")
 
-    media_type = "video/mp4" if filename.endswith(".mp4") else "audio/wav"
+    if filename.endswith(".mp4"):
+        media_type = "video/mp4"
+    elif filename.endswith(".wav"):
+        media_type = "audio/wav"
+    else:
+        media_type = "application/octet-stream"
 
     def stream():
         with open(file_path, "rb") as f:
