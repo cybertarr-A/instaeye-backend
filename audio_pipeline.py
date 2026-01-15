@@ -104,7 +104,7 @@ def transcribe_audio(audio_path: str) -> str:
 # MAIN PIPELINE
 # -----------------------------
 
-def process_audio(audio_cdn_url: str) -> dict:
+def process_reel(audio_cdn_url: str) -> dict:
     audio_path = None
 
     try:
