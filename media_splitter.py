@@ -49,8 +49,8 @@ def download_video(url: str) -> Path:
 
 def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
     """
-    Upload file to Supabase and return PUBLIC URL.
-    Bucket MUST be public.
+    Upload file to Supabase and return a PUBLIC URL.
+    Bucket must be PUBLIC.
     """
     content_type = (
         "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"
@@ -61,8 +61,7 @@ def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
             remote_path,
             f,
             {
-                "content-type": content_type,
-                "upsert": True,
+                "content-type": content_type,  # ✅ strings only
             },
         )
 
@@ -82,7 +81,7 @@ def split_media(video_path: Path, request_id: str) -> dict:
     rest_video  = job_dir / "rest_video.mp4"
     rest_audio  = job_dir / "rest_audio.wav"
 
-    # INTRO VIDEO (first 5 seconds)
+    # INTRO VIDEO (first 5s)
     subprocess.run(
         [
             FFMPEG, "-y",
