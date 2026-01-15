@@ -10,7 +10,7 @@ from video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 
-from audio_pipeline import process_reel
+from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
 
@@ -82,13 +82,18 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
         return {"status": "error", "message": "No video URL provided"}
     return analyze_reel(url)
 
+# ✅ FIXED ROUTE
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
-        return process_reel(req.media_url)
+        return process_audio(req.media_url)
     except Exception as e:
         traceback.print_exc()
-        return {"status": "error", "stage": "audio_pipeline", "message": str(e)}
+        return {
+            "status": "error",
+            "stage": "audio_pipeline",
+            "message": str(e)
+        }
 
 @app.post("/analyze-industry")
 def analyze_industry_api(req: IndustryAnalyzeRequest):
