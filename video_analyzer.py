@@ -5,94 +5,118 @@ import requests
 import tempfile
 from openai import OpenAI
 
-# Read OpenAI key from Railway environment, not hardcoded
+# --------------------------------------------------
+# OpenAI Client
+# --------------------------------------------------
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# --------------------------------------------------
+# Default prompt (used only if none is provided)
+# --------------------------------------------------
+DEFAULT_PROMPT = (
+    "Analyze this Instagram Reel frame.\n\n"
+    "Describe:\n"
+    "- What is visibly happening\n"
+    "- Any on-screen text or branding\n"
+    "- Likely content category (education, promo, meme, lifestyle, etc.)\n"
+    "- Whether there appears to be promotional intent\n\n"
+    "Clearly distinguish what is directly visible from what is inferred.\n"
+    "Do NOT assume audio or spoken dialogue unless visually implied."
+)
 
+# --------------------------------------------------
+# Download video
+# --------------------------------------------------
 def download_video(video_url: str) -> str:
-    """Download a video from URL into a temp .mp4 file."""
-    response = requests.get(video_url, stream=True)
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    response = requests.get(video_url, stream=True, timeout=60)
+    response.raise_for_status()
 
-    for chunk in response.iter_content(chunk_size=1024):
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    for chunk in response.iter_content(chunk_size=1024 * 1024):
         if chunk:
             tmp.write(chunk)
 
     tmp.close()
     return tmp.name
 
-
-def extract_frame(video_path: str, frame_number: int = 30) -> str:
-    """Extract frame #30 from the video and save as .jpg."""
+# --------------------------------------------------
+# Extract representative frame
+# --------------------------------------------------
+def extract_frame(video_path: str) -> str:
     cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+    if total_frames <= 0:
+        cap.release()
+        raise Exception("No frames found in video")
+
+    frame_number = max(1, total_frames // 4)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
     success, frame = cap.read()
+    cap.release()
+
     if not success:
         raise Exception("Failed to extract frame")
 
     img_path = video_path.replace(".mp4", ".jpg")
     cv2.imwrite(img_path, frame)
-    cap.release()
     return img_path
 
-
-def analyze_frame(image_path: str) -> str:
-    """Send extracted frame to OpenAI Vision model."""
+# --------------------------------------------------
+# Analyze frame with OpenAI (prompt injected)
+# --------------------------------------------------
+def analyze_frame(image_path: str, prompt: str) -> str:
     with open(image_path, "rb") as img:
         img_b64 = base64.b64encode(img.read()).decode("utf-8")
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
+    response = client.responses.create(
+        model="gpt-4.1",
+        input=[
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "text",
-                        "text": (
-                            "Analyze this Instagram Reel frame and describe "
-                            "what the video is about. Identify any promotional "
-                            "Identify the music/Audio context of the reel"
-                            "intent or visible links. also analyze what is people are saying in the video and what is the audio/music and analyze them too"
-                        )
+                        "type": "input_text",
+                        "text": prompt
                     },
                     {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{img_b64}"
-                        }
+                        "type": "input_image",
+                        "image_base64": img_b64
                     }
                 ]
             }
         ]
     )
 
-    return response.choices[0].message.content
+    return response.output_text
 
+# --------------------------------------------------
+# Main entry point (used by FastAPI / HTTP node)
+# --------------------------------------------------
+def analyze_reel(video_url: str, prompt: str | None = None) -> dict:
+    """
+    Analyze a reel using a dynamically provided prompt.
+    """
+    video_path = None
+    frame_path = None
 
-# ----------------------------
-# MAIN ENTRY POINT FOR FASTAPI
-# ----------------------------
-def analyze_reel(video_url: str) -> dict:
-    """
-    Master function used by the main FastAPI server.
-    Attempts to analyze the reel by extracting a frame and describing it.
-    """
     try:
         video_path = download_video(video_url)
         frame_path = extract_frame(video_path)
 
-        analysis = analyze_frame(frame_path)
+        final_prompt = prompt.strip() if prompt else DEFAULT_PROMPT
+        analysis = analyze_frame(frame_path, final_prompt)
 
         return {
             "video_url": video_url,
-            "analysis": analysis
+            "analysis": analysis,
+            "prompt_used": final_prompt,
+            "method": "openai_vision_frame_analysis"
         }
 
     finally:
-        # Clean temp files
-        if "video_path" in locals() and os.path.exists(video_path):
+        if video_path and os.path.exists(video_path):
             os.remove(video_path)
-        if "frame_path" in locals() and os.path.exists(frame_path):
+        if frame_path and os.path.exists(frame_path):
             os.remove(frame_path)
