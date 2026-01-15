@@ -54,7 +54,13 @@ def download_audio(audio_url: str) -> str:
 
 def detect_song_from_audio_file(audio_path: str) -> dict:
     with open(audio_path, "rb") as f:
-        files = {"file": f}
+        files = {
+            "file": (
+                "audio.wav",     # REQUIRED filename
+                f,
+                "audio/wav"      # REQUIRED content-type
+            )
+        }
 
         r = requests.post(
             SHAZAM_RECOGNIZE_URL,
@@ -86,6 +92,7 @@ def detect_song_from_audio_file(audio_path: str) -> dict:
         "artist": track.get("subtitle") or track.get("artist"),
         "shazam_url": track.get("url")
     }
+
 
 # -----------------------------
 # OPENAI TRANSCRIPTION
