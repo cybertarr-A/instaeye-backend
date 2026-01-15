@@ -208,3 +208,19 @@ def serve_ephemeral_media(request_id: str, filename: str, token: str):
         media_type=media_type,
         filename=filename
     )
+# ============================
+# EXTRACT FRAMES (Gemini-safe)
+# ============================
+
+frames_dir = job_dir / "frames"
+frames_dir.mkdir(exist_ok=True)
+
+subprocess.run(
+    [
+        FFMPEG, "-y",
+        "-i", str(intro_video),
+        "-vf", "fps=1",
+        str(frames_dir / "frame_%02d.jpg")
+    ],
+    check=True
+)
