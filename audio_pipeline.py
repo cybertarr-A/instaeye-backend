@@ -44,12 +44,10 @@ SHAZAM_HEADERS = {
 # -----------------------------
 
 def extract_audio_from_url(media_url: str, wav_path: str):
-    """
-    Extract audio directly from CDN MP4 URL (no yt-dlp, no scraping)
-    """
     ffmpeg_cmd = [
         FFMPEG_BIN, "-y",
         "-i", media_url,
+        "-t", "15",               # ⬅️ Shazam works best with 10–15s
         "-vn",
         "-ac", "1",
         "-ar", "44100",
@@ -71,18 +69,19 @@ def extract_audio_from_url(media_url: str, wav_path: str):
 
 
 # -----------------------------
-# SHAZAM SONG DETECTION (URL MODE)
+# ✅ SHAZAM SONG DETECTION (FILE MODE — FIXED)
 # -----------------------------
 
-def detect_song_from_audio_url(media_url: str) -> dict:
-    params = {"url": media_url}
+def detect_song_from_audio_file(wav_path: str) -> dict:
+    with open(wav_path, "rb") as f:
+        files = {"file": f}
 
-    r = requests.get(
-        SHAZAM_RECOGNIZE_URL,
-        headers=SHAZAM_HEADERS,
-        params=params,
-        timeout=60
-    )
+        r = requests.post(
+            SHAZAM_RECOGNIZE_URL,
+            headers=SHAZAM_HEADERS,
+            files=files,
+            timeout=60
+        )
 
     if r.status_code != 200:
         return {
@@ -105,12 +104,12 @@ def detect_song_from_audio_url(media_url: str) -> dict:
         "status": "matched",
         "title": track.get("title"),
         "artist": track.get("subtitle") or track.get("artist"),
-        "shazam_url": track.get("url")  # ✅ OFFICIAL SHAZAM LINK
+        "shazam_url": track.get("url")
     }
 
 
 # -----------------------------
-# OPENAI TRANSCRIPTION
+# OPENAI TRANSCRIPTION (UNCHANGED)
 # -----------------------------
 
 def transcribe_audio(audio_path: str) -> str:
@@ -123,7 +122,7 @@ def transcribe_audio(audio_path: str) -> str:
 
 
 # -----------------------------
-# OPENAI ANALYSIS
+# OPENAI ANALYSIS (UNCHANGED)
 # -----------------------------
 
 def analyze_transcript(transcript_text: str) -> str:
@@ -150,7 +149,7 @@ Transcript:
 
 
 # -----------------------------
-# FULL PIPELINE
+# FULL PIPELINE (ONLY 1 LINE CHANGED)
 # -----------------------------
 
 def process_reel(media_url: str) -> dict:
@@ -163,8 +162,8 @@ def process_reel(media_url: str) -> dict:
     # 1. Extract audio from CDN
     extract_audio_from_url(media_url, wav_path)
 
-    # 2. Detect song via Shazam (URL mode)
-    song = detect_song_from_audio_url(media_url)
+    # 2. ✅ Detect song via Shazam FILE MODE (FIXED)
+    song = detect_song_from_audio_file(wav_path)
 
     # 3. Transcribe speech
     transcript_text = transcribe_audio(wav_path)
@@ -179,7 +178,7 @@ def process_reel(media_url: str) -> dict:
     return {
         "status": "success",
         "audio_id": uid,
-        "song_detection": song,   # ✅ includes shazam_url
+        "song_detection": song,
         "transcript_text": transcript_text,
         "analysis": analysis
     }
