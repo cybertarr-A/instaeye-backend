@@ -33,7 +33,7 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 def download_audio(audio_url: str) -> str:
     audio_id = str(uuid.uuid4())
-    audio_path = f"{TMP_DIR}/{audio_id}.audio"
+    audio_path = os.path.join(TMP_DIR, f"{audio_id}.audio")
 
     r = requests.get(audio_url, stream=True, timeout=60)
     r.raise_for_status()
@@ -43,8 +43,8 @@ def download_audio(audio_url: str) -> str:
             if chunk:
                 f.write(chunk)
 
-    if os.path.getsize(audio_path) < 15000:
-        raise RuntimeError("Downloaded audio file too small")
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) < 15000:
+        raise RuntimeError("Downloaded audio file too small or invalid")
 
     return audio_path
 
@@ -101,20 +101,16 @@ def transcribe_audio(audio_path: str) -> str:
     return transcription.text.strip()
 
 # -----------------------------
-# MAIN PIPELINE
+# MAIN PIPELINE (PRIMARY EXPORT)
 # -----------------------------
 
-def process_reel(audio_cdn_url: str) -> dict:
+def process_audio(audio_cdn_url: str) -> dict:
     audio_path = None
 
     try:
-        # 1. Download audio
         audio_path = download_audio(audio_cdn_url)
 
-        # 2. Detect song
         song = detect_song_from_audio_file(audio_path)
-
-        # 3. Transcribe speech
         transcript = transcribe_audio(audio_path)
 
         return {
@@ -127,3 +123,11 @@ def process_reel(audio_cdn_url: str) -> dict:
     finally:
         if audio_path and os.path.exists(audio_path):
             os.remove(audio_path)
+
+# -----------------------------
+# BACKWARD COMPATIBILITY
+# -----------------------------
+
+# ⚠️ DO NOT REMOVE
+# This prevents server crashes if older code imports process_reel
+process_reel = process_audio
