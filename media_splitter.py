@@ -55,7 +55,6 @@ def upload_and_sign(local_path: Path, remote_path: str) -> str:
             remote_path,
             f,
             {"content-type": "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"},
-            upsert=True
         )
 
     signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
