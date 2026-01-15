@@ -1,27 +1,28 @@
 import os
 import uuid
-import time
 import subprocess
 import requests
 from pathlib import Path
-from typing import Dict
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from supabase import create_client, Client
 
 # ================= CONFIG =================
 
 FFMPEG = "ffmpeg"
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL")
+TMP_DIR = Path("/tmp")
 
-if not PUBLIC_BASE_URL:
-    raise RuntimeError("PUBLIC_BASE_URL env var not set")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "temp-media")
 
-TOKEN_TTL_SECONDS = 600  # 10 minutes
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Supabase credentials missing")
 
-# In-memory token store (OK for now, Redis later)
-EPHEMERAL_TOKENS: Dict[str, float] = {}
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+SIGNED_URL_TTL = 600  # seconds (10 min)
 
 router = APIRouter()
 
@@ -29,29 +30,14 @@ router = APIRouter()
 
 class SplitRequest(BaseModel):
     cdn_url: str
+    user_id: str | None = None
 
-# ================= TOKEN UTILS =================
-
-def create_token() -> str:
-    token = str(uuid.uuid4())
-    EPHEMERAL_TOKENS[token] = time.time() + TOKEN_TTL_SECONDS
-    return token
-
-def validate_token(token: str) -> bool:
-    exp = EPHEMERAL_TOKENS.get(token)
-    if not exp:
-        return False
-    if time.time() > exp:
-        EPHEMERAL_TOKENS.pop(token, None)
-        return False
-    return True
-
-# ================= MEDIA UTILS =================
+# ================= UTILS =================
 
 def download_video(url: str) -> Path:
-    tmp_video = Path("/tmp") / f"src_{uuid.uuid4()}.mp4"
+    tmp_video = TMP_DIR / f"src_{uuid.uuid4()}.mp4"
 
-    r = requests.get(url, stream=True, timeout=30)
+    r = requests.get(url, stream=True, timeout=60)
     if r.status_code != 200:
         raise Exception("Video download failed")
 
@@ -63,9 +49,26 @@ def download_video(url: str) -> Path:
     return tmp_video
 
 
-def split_media(video_path: Path) -> str:
-    request_id = str(uuid.uuid4())
-    job_dir = Path(f"/tmp/job_{request_id}")
+def upload_and_sign(local_path: Path, remote_path: str) -> str:
+    with open(local_path, "rb") as f:
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            remote_path,
+            f,
+            {"content-type": "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"},
+            upsert=True
+        )
+
+    signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
+        remote_path,
+        SIGNED_URL_TTL
+    )
+
+    return signed["signedURL"]
+
+# ================= SPLITTER =================
+
+def split_media(video_path: Path, request_id: str) -> dict:
+    job_dir = TMP_DIR / f"job_{request_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
 
     intro_video = job_dir / "intro_5s_video.mp4"
@@ -73,9 +76,7 @@ def split_media(video_path: Path) -> str:
     rest_video  = job_dir / "rest_video.mp4"
     rest_audio  = job_dir / "rest_audio.wav"
 
-    # ============================
-    # INTRO VIDEO (Gemini-safe)
-    # ============================
+    # INTRO VIDEO
     subprocess.run(
         [
             FFMPEG, "-y",
@@ -84,8 +85,6 @@ def split_media(video_path: Path) -> str:
             "-movflags", "+faststart",
             "-pix_fmt", "yuv420p",
             "-c:v", "libx264",
-            "-profile:v", "baseline",
-            "-level", "3.0",
             "-preset", "veryfast",
             "-crf", "23",
             "-an",
@@ -94,23 +93,13 @@ def split_media(video_path: Path) -> str:
         check=True
     )
 
-    # ============================
-    # REST VIDEO (fast copy)
-    # ============================
+    # REST VIDEO
     subprocess.run(
-        [
-            FFMPEG, "-y",
-            "-i", str(video_path),
-            "-ss", "5",
-            "-c", "copy",
-            str(rest_video)
-        ],
+        [FFMPEG, "-y", "-i", str(video_path), "-ss", "5", "-c", "copy", str(rest_video)],
         check=True
     )
 
-    # ============================
     # INTRO AUDIO
-    # ============================
     subprocess.run(
         [
             FFMPEG, "-y",
@@ -125,9 +114,7 @@ def split_media(video_path: Path) -> str:
         check=True
     )
 
-    # ============================
     # REST AUDIO
-    # ============================
     subprocess.run(
         [
             FFMPEG, "-y",
@@ -142,85 +129,31 @@ def split_media(video_path: Path) -> str:
         check=True
     )
 
-    return request_id
+    base_path = f"{request_id}"
 
+    return {
+        "intro_video_url": upload_and_sign(intro_video, f"{base_path}/intro_5s_video.mp4"),
+        "intro_audio_url": upload_and_sign(intro_audio, f"{base_path}/intro_5s_audio.wav"),
+        "rest_video_url": upload_and_sign(rest_video, f"{base_path}/rest_video.mp4"),
+        "rest_audio_url": upload_and_sign(rest_audio, f"{base_path}/rest_audio.wav"),
+    }
 
 # ================= API =================
 
 @router.post("/split-media-5s")
 def split_media_api(req: SplitRequest):
     try:
-        video_path = download_video(req.cdn_url)
-        request_id = split_media(video_path)
+        request_id = str(uuid.uuid4())
 
-        base = PUBLIC_BASE_URL.rstrip("/")
+        video_path = download_video(req.cdn_url)
+        urls = split_media(video_path, request_id)
 
         return {
             "status": "ok",
             "request_id": request_id,
-
-            # INTRO
-            "intro_video_url": (
-                f"{base}/ephemeral-media/{request_id}/intro_5s_video.mp4"
-                f"?token={create_token()}"
-            ),
-            "intro_audio_url": (
-                f"{base}/ephemeral-media/{request_id}/intro_5s_audio.wav"
-                f"?token={create_token()}"
-            ),
-
-            # REST
-            "rest_video_url": (
-                f"{base}/ephemeral-media/{request_id}/rest_video.mp4"
-                f"?token={create_token()}"
-            ),
-            "rest_audio_url": (
-                f"{base}/ephemeral-media/{request_id}/rest_audio.wav"
-                f"?token={create_token()}"
-            ),
-
-            "ttl_seconds": TOKEN_TTL_SECONDS
+            **urls,
+            "ttl_seconds": SIGNED_URL_TTL
         }
 
     except Exception as e:
         raise HTTPException(500, str(e))
-
-# ================= EPHEMERAL MEDIA =================
-
-@router.get("/ephemeral-media/{request_id}/{filename}")
-def serve_ephemeral_media(request_id: str, filename: str, token: str):
-    if not validate_token(token):
-        raise HTTPException(403, "Expired or invalid token")
-
-    file_path = Path(f"/tmp/job_{request_id}") / filename
-    if not file_path.exists():
-        raise HTTPException(404, "File not found")
-
-    if filename.endswith(".mp4"):
-        media_type = "video/mp4"
-    elif filename.endswith(".wav"):
-        media_type = "audio/wav"
-    else:
-        media_type = "application/octet-stream"
-
-    return FileResponse(
-        file_path,
-        media_type=media_type,
-        filename=filename
-    )
-# ============================
-# EXTRACT FRAMES (Gemini-safe)
-# ============================
-
-frames_dir = job_dir / "frames"
-frames_dir.mkdir(exist_ok=True)
-
-subprocess.run(
-    [
-        FFMPEG, "-y",
-        "-i", str(intro_video),
-        "-vf", "fps=1",
-        str(frames_dir / "frame_%02d.jpg")
-    ],
-    check=True
-)
