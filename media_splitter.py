@@ -22,8 +22,6 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-SIGNED_URL_TTL = 600  # seconds (10 min)
-
 router = APIRouter()
 
 # ================= MODELS =================
@@ -39,7 +37,7 @@ def download_video(url: str) -> Path:
 
     r = requests.get(url, stream=True, timeout=60)
     if r.status_code != 200:
-        raise Exception("Video download failed")
+        raise Exception(f"Video download failed: {r.status_code}")
 
     with open(tmp_video, "wb") as f:
         for chunk in r.iter_content(1024 * 1024):
@@ -49,20 +47,29 @@ def download_video(url: str) -> Path:
     return tmp_video
 
 
-def upload_and_sign(local_path: Path, remote_path: str) -> str:
+def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
+    """
+    Upload file to Supabase and return PUBLIC URL.
+    Bucket MUST be public.
+    """
+    content_type = (
+        "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"
+    )
+
     with open(local_path, "rb") as f:
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             remote_path,
             f,
-            {"content-type": "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"},
+            {
+                "content-type": content_type,
+                "upsert": True,
+            },
         )
 
-    signed = supabase.storage.from_(SUPABASE_BUCKET).create_signed_url(
-        remote_path,
-        SIGNED_URL_TTL
+    return (
+        f"{SUPABASE_URL}/storage/v1/object/public/"
+        f"{SUPABASE_BUCKET}/{remote_path}"
     )
-
-    return signed["signedURL"]
 
 # ================= SPLITTER =================
 
@@ -75,7 +82,7 @@ def split_media(video_path: Path, request_id: str) -> dict:
     rest_video  = job_dir / "rest_video.mp4"
     rest_audio  = job_dir / "rest_audio.wav"
 
-    # INTRO VIDEO
+    # INTRO VIDEO (first 5 seconds)
     subprocess.run(
         [
             FFMPEG, "-y",
@@ -92,9 +99,20 @@ def split_media(video_path: Path, request_id: str) -> dict:
         check=True
     )
 
-    # REST VIDEO
+    # REST VIDEO (after 5s)
     subprocess.run(
-        [FFMPEG, "-y", "-i", str(video_path), "-ss", "5", "-c", "copy", str(rest_video)],
+        [
+            FFMPEG, "-y",
+            "-i", str(video_path),
+            "-ss", "5",
+            "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p",
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "23",
+            "-an",
+            str(rest_video)
+        ],
         check=True
     )
 
@@ -131,10 +149,18 @@ def split_media(video_path: Path, request_id: str) -> dict:
     base_path = f"{request_id}"
 
     return {
-        "intro_video_url": upload_and_sign(intro_video, f"{base_path}/intro_5s_video.mp4"),
-        "intro_audio_url": upload_and_sign(intro_audio, f"{base_path}/intro_5s_audio.wav"),
-        "rest_video_url": upload_and_sign(rest_video, f"{base_path}/rest_video.mp4"),
-        "rest_audio_url": upload_and_sign(rest_audio, f"{base_path}/rest_audio.wav"),
+        "intro_video_url": upload_and_get_public_url(
+            intro_video, f"{base_path}/intro_5s_video.mp4"
+        ),
+        "intro_audio_url": upload_and_get_public_url(
+            intro_audio, f"{base_path}/intro_5s_audio.wav"
+        ),
+        "rest_video_url": upload_and_get_public_url(
+            rest_video, f"{base_path}/rest_video.mp4"
+        ),
+        "rest_audio_url": upload_and_get_public_url(
+            rest_audio, f"{base_path}/rest_audio.wav"
+        ),
     }
 
 # ================= API =================
@@ -151,8 +177,7 @@ def split_media_api(req: SplitRequest):
             "status": "ok",
             "request_id": request_id,
             **urls,
-            "ttl_seconds": SIGNED_URL_TTL
         }
 
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(status_code=500, detail=str(e))
