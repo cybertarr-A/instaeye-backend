@@ -33,7 +33,7 @@ os.makedirs(TMP_DIR, exist_ok=True)
 
 def download_audio(audio_url: str) -> str:
     audio_id = str(uuid.uuid4())
-    audio_path = os.path.join(TMP_DIR, f"{audio_id}.audio")
+    audio_path = os.path.join(TMP_DIR, f"{audio_id}.wav")
 
     r = requests.get(audio_url, stream=True, timeout=60)
     r.raise_for_status()
