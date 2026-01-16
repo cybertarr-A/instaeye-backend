@@ -2,20 +2,16 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List, Any, Optional
 import traceback
-import json
+
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 from video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
-
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
 from single_post_test import run_single_post_test
-
-result = run_single_post_test(body)
-print(json.dumps(result))
 
 # ============================
 # APP MUST COME FIRST
@@ -23,13 +19,11 @@ print(json.dumps(result))
 
 app = FastAPI(title="InstaEye Backend", version="1.1")
 
-
 # ============================
 # REGISTER ROUTERS AFTER APP
 # ============================
 
 app.include_router(split_router)
-
 
 # ============================
 # REQUEST MODELS
@@ -61,7 +55,6 @@ class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
-
 # ============================
 # ROUTES
 # ============================
@@ -85,7 +78,6 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
         return {"status": "error", "message": "No video URL provided"}
     return analyze_reel(url)
 
-# ✅ FIXED ROUTE
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
@@ -109,14 +101,9 @@ def top_posts_api(req: TopPostsRequest):
 @app.post("/generate-content-ideas")
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
+
+# ✅ SINGLE POST TEST (CORRECT PLACE)
 @app.post("/analyze/post")
 async def analyze_post(request: Request):
-    try:
-        body = await request.json()
-        result = run_single_post_test(body)
-        return result
-
-    except Exception as e:
-        return {
-            "error": str(e)
-        }
+    body = await request.json()
+    return run_single_post_test(body)
