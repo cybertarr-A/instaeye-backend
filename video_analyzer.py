@@ -22,27 +22,29 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --------------------------------------------------
-# PROMPTS (5 ANALYSES)
+# PROMPT SET (5 ANALYSIS MODES)
 # --------------------------------------------------
 PROMPTS = {
+    "visual_summary": (
+        "Describe exactly what is visible in this Instagram Reel frame. "
+        "Mention people, actions, objects, text overlays, and environment. "
+        "Do not infer intent."
+    ),
+    "content_category": (
+        "Classify this content into categories such as education, promotion, "
+        "entertainment, lifestyle, meme, or news. Explain briefly."
+    ),
+    "promotion_detection": (
+        "Determine whether this content appears promotional or monetized. "
+        "Look for branding, products, calls to action, or logos."
+    ),
     "hook_analysis": (
-        "Analyze the first impression of this video frame. "
-        "Does it work as a hook? Explain attention capture, curiosity, and pacing."
+        "Analyze how strong the visual hook is in the first few seconds. "
+        "Explain what makes a viewer stop scrolling."
     ),
-    "visual_analysis": (
-        "Analyze visual composition, framing, motion, lighting, and on-screen elements."
-    ),
-    "emotion_analysis": (
-        "Analyze the emotional tone conveyed visually. "
-        "What emotions does this content try to evoke?"
-    ),
-    "marketing_analysis": (
-        "Analyze whether this content appears promotional. "
-        "Identify branding, persuasion techniques, or calls to action."
-    ),
-    "virality_analysis": (
-        "Analyze the viral potential of this content. "
-        "Explain why it might perform well or poorly on social platforms."
+    "virality_potential": (
+        "Estimate the viral potential of this reel based on visuals alone. "
+        "Explain strengths and weaknesses."
     ),
 }
 
@@ -62,7 +64,7 @@ def download_video(video_url: str) -> Path:
     return tmp
 
 # --------------------------------------------------
-# Extract frame
+# Extract representative frame
 # --------------------------------------------------
 def extract_frame(video_path: Path) -> Path:
     cap = cv2.VideoCapture(str(video_path))
@@ -70,7 +72,7 @@ def extract_frame(video_path: Path) -> Path:
 
     if total_frames <= 0:
         cap.release()
-        raise RuntimeError("No frames found")
+        raise RuntimeError("No frames found in video")
 
     frame_number = max(1, total_frames // 4)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
@@ -86,9 +88,9 @@ def extract_frame(video_path: Path) -> Path:
     return img_path
 
 # --------------------------------------------------
-# Upload frame & return public URL
+# Upload frame
 # --------------------------------------------------
-def upload_frame_and_get_url(image_path: Path) -> str:
+def upload_frame(image_path: Path) -> str:
     remote_path = f"frames/{uuid.uuid4()}.jpg"
 
     with open(image_path, "rb") as f:
@@ -104,9 +106,9 @@ def upload_frame_and_get_url(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# Analyze frame with OpenAI
+# OpenAI Vision Analysis
 # --------------------------------------------------
-def analyze_frame(image_url: str, prompt: str) -> str:
+def run_prompt(image_url: str, prompt: str) -> str:
     response = client.responses.create(
         model="gpt-4.1-mini",
         input=[
@@ -119,11 +121,10 @@ def analyze_frame(image_url: str, prompt: str) -> str:
             }
         ],
     )
-
-    return response.output_text.strip()
+    return response.output_text
 
 # --------------------------------------------------
-# MAIN ENTRY POINT (5 PROMPTS)
+# MAIN ENTRY
 # --------------------------------------------------
 def analyze_reel(video_url: str) -> dict:
     video_path = None
@@ -132,19 +133,19 @@ def analyze_reel(video_url: str) -> dict:
     try:
         video_path = download_video(video_url)
         frame_path = extract_frame(video_path)
-
-        frame_url = upload_frame_and_get_url(frame_path)
+        frame_url = upload_frame(frame_path)
 
         results = {}
         for key, prompt in PROMPTS.items():
-            results[key] = analyze_frame(frame_url, prompt)
+            results[key] = run_prompt(frame_url, prompt)
 
         return {
             "status": "success",
             "video_url": video_url,
             "frame_url": frame_url,
             "analyses": results,
-            "method": "openai_vision_multi_prompt_analysis",
+            "analysis_count": len(results),
+            "method": "multi_prompt_openai_vision",
         }
 
     finally:
@@ -152,4 +153,3 @@ def analyze_reel(video_url: str) -> dict:
             video_path.unlink()
         if frame_path and frame_path.exists():
             frame_path.unlink()
-D
