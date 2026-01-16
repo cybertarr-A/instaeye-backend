@@ -22,18 +22,29 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --------------------------------------------------
-# Default prompt
+# PROMPTS (5 ANALYSES)
 # --------------------------------------------------
-DEFAULT_PROMPT = (
-    "Analyze this Instagram Reel frame.\n\n"
-    "Describe:\n"
-    "- What is visibly happening\n"
-    "- Any on-screen text or branding\n"
-    "- Likely content category (education, promo, meme, lifestyle, etc.)\n"
-    "- Whether there appears to be promotional intent\n\n"
-    "Clearly distinguish what is directly visible from what is inferred.\n"
-    "Do NOT assume audio or spoken dialogue unless visually implied."
-)
+PROMPTS = {
+    "hook_analysis": (
+        "Analyze the first impression of this video frame. "
+        "Does it work as a hook? Explain attention capture, curiosity, and pacing."
+    ),
+    "visual_analysis": (
+        "Analyze visual composition, framing, motion, lighting, and on-screen elements."
+    ),
+    "emotion_analysis": (
+        "Analyze the emotional tone conveyed visually. "
+        "What emotions does this content try to evoke?"
+    ),
+    "marketing_analysis": (
+        "Analyze whether this content appears promotional. "
+        "Identify branding, persuasion techniques, or calls to action."
+    ),
+    "virality_analysis": (
+        "Analyze the viral potential of this content. "
+        "Explain why it might perform well or poorly on social platforms."
+    ),
+}
 
 # --------------------------------------------------
 # Download video
@@ -59,7 +70,7 @@ def extract_frame(video_path: Path) -> Path:
 
     if total_frames <= 0:
         cap.release()
-        raise Exception("No frames found")
+        raise RuntimeError("No frames found")
 
     frame_number = max(1, total_frames // 4)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
@@ -68,7 +79,7 @@ def extract_frame(video_path: Path) -> Path:
     cap.release()
 
     if not success:
-        raise Exception("Failed to extract frame")
+        raise RuntimeError("Failed to extract frame")
 
     img_path = video_path.with_suffix(".jpg")
     cv2.imwrite(str(img_path), frame)
@@ -93,7 +104,7 @@ def upload_frame_and_get_url(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# Analyze frame with OpenAI (URL-based)
+# Analyze frame with OpenAI
 # --------------------------------------------------
 def analyze_frame(image_url: str, prompt: str) -> str:
     response = client.responses.create(
@@ -109,12 +120,12 @@ def analyze_frame(image_url: str, prompt: str) -> str:
         ],
     )
 
-    return response.output_text
+    return response.output_text.strip()
 
 # --------------------------------------------------
-# Main entry point
+# MAIN ENTRY POINT (5 PROMPTS)
 # --------------------------------------------------
-def analyze_reel(video_url: str, prompt: str | None = None) -> dict:
+def analyze_reel(video_url: str) -> dict:
     video_path = None
     frame_path = None
 
@@ -123,15 +134,17 @@ def analyze_reel(video_url: str, prompt: str | None = None) -> dict:
         frame_path = extract_frame(video_path)
 
         frame_url = upload_frame_and_get_url(frame_path)
-        final_prompt = prompt.strip() if prompt else DEFAULT_PROMPT
 
-        analysis = analyze_frame(frame_url, final_prompt)
+        results = {}
+        for key, prompt in PROMPTS.items():
+            results[key] = analyze_frame(frame_url, prompt)
 
         return {
+            "status": "success",
             "video_url": video_url,
             "frame_url": frame_url,
-            "analysis": analysis,
-            "method": "openai_vision_frame_analysis",
+            "analyses": results,
+            "method": "openai_vision_multi_prompt_analysis",
         }
 
     finally:
@@ -139,3 +152,4 @@ def analyze_reel(video_url: str, prompt: str | None = None) -> dict:
             video_path.unlink()
         if frame_path and frame_path.exists():
             frame_path.unlink()
+D
