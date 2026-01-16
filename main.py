@@ -11,7 +11,7 @@ from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
-from single_post_test import run_single_post_test
+from single_post_analyzer import analyze_single_post
 
 # ============================
 # APP MUST COME FIRST
@@ -106,4 +106,4 @@ def generate_ideas_api(req: ContentIdeasRequest):
 @app.post("/analyze/post")
 async def analyze_post(request: Request):
     body = await request.json()
-    return run_single_post_test(body)
+    return analyze_single_post(body)
