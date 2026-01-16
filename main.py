@@ -1,8 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import List, Any, Optional
 import traceback
-
+import json
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
@@ -109,3 +109,14 @@ def top_posts_api(req: TopPostsRequest):
 @app.post("/generate-content-ideas")
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
+@app.post("/analyze/post")
+async def analyze_post(request: Request):
+    try:
+        body = await request.json()
+        result = run_single_post_test(body)
+        return result
+
+    except Exception as e:
+        return {
+            "error": str(e)
+        }
