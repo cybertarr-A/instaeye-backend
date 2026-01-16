@@ -12,7 +12,10 @@ from trend_engine import analyze_industry
 
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
+from single_post_test import run_single_post_test
 
+result = run_single_post_test(body)
+print(json.dumps(result))
 
 # ============================
 # APP MUST COME FIRST
