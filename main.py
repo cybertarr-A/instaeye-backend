@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Any, Optional
 import traceback
+import os
+import requests
 
 # ----------------------------
 # Core modules
@@ -16,21 +18,23 @@ from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
-# ----------------------------
-# CDN resolvers
-# ----------------------------
 
-from cdn_resolver import get_post_cdn_url
-from rapidapi_instagram_cdn import get_recent_cdns as rapidapi_cdn_resolver
+# ============================
+# CONFIG
+# ============================
+
+SERPAPI_KEY = os.getenv("SERPAPI_KEY")
+SERPAPI_URL = "https://serpapi.com/search.json"
 
 
 # ============================
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.3")
+app = FastAPI(title="InstaEye Backend", version="1.5")
 
 app.include_router(split_router)
+
 
 # ============================
 # REQUEST MODELS
@@ -62,11 +66,55 @@ class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
-# 🔹 CDN request
-class PostCDNRequest(BaseModel):
-    username: str
-    post_url: Optional[str] = None
-    media_id: Optional[str] = None
+# 🔹 Instagram Discovery
+class InstagramDiscoveryRequest(BaseModel):
+    keywords: List[str]
+    page: int = 0
+    num_results: int = 10
+
+
+# ============================
+# HELPER FUNCTIONS
+# ============================
+
+def build_google_instagram_query(keywords: List[str]) -> str:
+    block = " OR ".join(f'"{k}"' for k in keywords)
+    return f"site:instagram.com ({block})"
+
+
+def serpapi_search(query: str, page: int, num_results: int) -> dict:
+    if not SERPAPI_KEY:
+        raise RuntimeError("SERPAPI_KEY not set")
+
+    params = {
+        "engine": "google",
+        "q": query,
+        "api_key": SERPAPI_KEY,
+        "num": num_results,
+        "start": page * num_results
+    }
+
+    response = requests.get(SERPAPI_URL, params=params, timeout=30)
+    response.raise_for_status()
+    return response.json()
+
+
+def extract_instagram_profiles(serp_data: dict) -> List[dict]:
+    profiles = []
+
+    for item in serp_data.get("organic_results", []):
+        link = item.get("link", "")
+
+        if "instagram.com" not in link:
+            continue
+
+        profiles.append({
+            "profile_url": link.split("?")[0].rstrip("/"),
+            "title": item.get("title"),
+            "snippet": item.get("snippet")
+        })
+
+    return profiles
 
 
 # ============================
@@ -125,50 +173,31 @@ def generate_ideas_api(req: ContentIdeasRequest):
 
 
 # =====================================================
-# ✅ CDN RESOLVER WITH RAPIDAPI FALLBACK
+# 🔍 INSTAGRAM ACCOUNT DISCOVERY (SERPAPI)
 # =====================================================
 
-@app.post("/resolve/post-cdn")
-def resolve_post_cdn_api(req: PostCDNRequest):
+@app.post("/discover/instagram-accounts")
+def discover_instagram_accounts(req: InstagramDiscoveryRequest):
     """
-    Resolve CDN URL with priority:
-    1) Official Instagram (Business Discovery / media_id)
-    2) RapidAPI fallback (best-effort)
+    Discover Instagram accounts using Google index via SerpAPI
     """
 
-    # ---- 1️⃣ Try OFFICIAL resolver first
     try:
-        result = official_cdn_resolver(
-            media_id=req.media_id,
-            username=req.username,
-            post_url=req.post_url
-        )
+        query = build_google_instagram_query(req.keywords)
+        serp_data = serpapi_search(query, req.page, req.num_results)
+        accounts = extract_instagram_profiles(serp_data)
 
-        if result.get("status") == "success":
-            result["resolver"] = "official"
-            return result
-
-    except Exception as e:
-        print("Official resolver failed:", e)
-
-    # ---- 2️⃣ RapidAPI fallback (username only)
-    try:
-        rapid = rapidapi_cdn_resolver(req.username, limit=1)
-
-        if rapid.get("status") == "success" and rapid.get("cdn_urls"):
-            return {
-                "status": "success",
-                "resolver": "rapidapi",
-                "username": req.username,
-                "cdn_url": rapid["cdn_urls"][0]
-            }
-
-        return rapid
+        return {
+            "status": "success",
+            "query_used": query,
+            "total_found": len(accounts),
+            "accounts": accounts
+        }
 
     except Exception as e:
         traceback.print_exc()
         return {
             "status": "error",
-            "resolver": "none",
+            "stage": "instagram_discovery",
             "message": str(e)
         }
