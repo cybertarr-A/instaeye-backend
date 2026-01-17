@@ -11,13 +11,15 @@ from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
-from single_post_analyzer import analyze_single_post
+
+# ✅ CDN resolver (NEW)
+from cdn_resolver import get_post_cdn_url
 
 # ============================
 # APP MUST COME FIRST
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.1")
+app = FastAPI(title="InstaEye Backend", version="1.2")
 
 # ============================
 # REGISTER ROUTERS AFTER APP
@@ -55,8 +57,8 @@ class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
-# ✅ SINGLE POST REQUEST MODEL
-class SinglePostRequest(BaseModel):
+# ✅ CDN-ONLY REQUEST MODEL
+class PostCDNRequest(BaseModel):
     username: str
     post_url: str
 
@@ -107,10 +109,17 @@ def top_posts_api(req: TopPostsRequest):
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
 
-# ✅ SINGLE POST ANALYZER (FIXED & SAFE)
-@app.post("/analyze/post")
-def analyze_post_api(req: SinglePostRequest):
-    return analyze_single_post(
+# ======================================================
+# ✅ CDN-ONLY POST RESOLVER (NEW, CLEAN, STABLE)
+# ======================================================
+
+@app.post("/resolve/post-cdn")
+def resolve_post_cdn_api(req: PostCDNRequest):
+    """
+    Resolve ONLY the CDN media URL for a post
+    (Business Discovery, recent posts only)
+    """
+    return get_post_cdn_url(
         username=req.username,
         post_url=req.post_url
     )
