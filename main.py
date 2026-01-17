@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Any, Optional
 import traceback
@@ -55,6 +55,10 @@ class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
+# ✅ SINGLE POST REQUEST MODEL
+class SinglePostRequest(BaseModel):
+    post_url: str
+
 # ============================
 # ROUTES
 # ============================
@@ -102,8 +106,7 @@ def top_posts_api(req: TopPostsRequest):
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
 
-# ✅ SINGLE POST TEST (CORRECT PLACE)
+# ✅ SINGLE POST ANALYZER (FIXED & SAFE)
 @app.post("/analyze/post")
-async def analyze_post(request: Request):
-    body = await request.json()
-    return analyze_single_post(body)
+def analyze_post_api(req: SinglePostRequest):
+    return analyze_single_post(req.post_url)
