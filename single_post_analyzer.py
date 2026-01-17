@@ -9,7 +9,7 @@ from openai import OpenAI
 # --------------------------------------------------
 
 IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_USER_ID = os.getenv("IG_USER_ID")
+IG_PARENT_USER_ID = os.getenv("IG_USER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
@@ -17,8 +17,8 @@ GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
 if not IG_ACCESS_TOKEN:
     raise RuntimeError("IG_ACCESS_TOKEN not set")
 
-if not IG_USER_ID:
-    raise RuntimeError("IG_USER_ID not set")
+if not IG_PARENT_USER_ID:
+    raise RuntimeError("IG_PARENT_USER_ID not set")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY not set")
