@@ -109,4 +109,7 @@ def generate_ideas_api(req: ContentIdeasRequest):
 # ✅ SINGLE POST ANALYZER (FIXED & SAFE)
 @app.post("/analyze/post")
 def analyze_post_api(req: SinglePostRequest):
-    return analyze_single_post(req.post_url)
+    return analyze_single_post(
+        username=req.username,
+        post_url=req.post_url
+    )
