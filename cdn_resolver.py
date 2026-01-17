@@ -1,114 +1,125 @@
-import os
-import requests
-from typing import Dict, Any
+from fastapi import FastAPI
+from pydantic import BaseModel
+from typing import List, Any, Optional
+import traceback
 
-# ----------------------------
-# Environment Setup
-# ----------------------------
-ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
-GRAPH_BASE = "https://graph.facebook.com/v24.0"
+from instagram_analyzer import analyze_profiles
+from content_ideas import generate_content
+from image_analyzer import analyze_image
+from video_analyzer import analyze_reel
+from top_posts import get_top_posts
+from trend_engine import analyze_industry
+from audio_pipeline import process_audio
+from media_splitter import router as split_router
 
-if not ACCESS_TOKEN or not IG_USER_ID:
-    print("⚠️ WARNING: IG_ACCESS_TOKEN or IG_PARENT_USER_ID not set.")
+# ✅ CDN resolver (NEW)
+from cdn_resolver import get_post_cdn_url
 
+# ============================
+# APP MUST COME FIRST
+# ============================
 
-# ----------------------------
-# Errors
-# ----------------------------
-class IGError(Exception):
-    pass
+app = FastAPI(title="InstaEye Backend", version="1.2")
 
+# ============================
+# REGISTER ROUTERS AFTER APP
+# ============================
 
-# ----------------------------
-# HTTP Helper
-# ----------------------------
-def _get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    params = {**params, "access_token": ACCESS_TOKEN}
-    resp = requests.get(url, params=params, timeout=30)
+app.include_router(split_router)
 
-    if resp.status_code != 200:
-        raise IGError(f"GET {url} -> {resp.status_code}: {resp.text}")
+# ============================
+# REQUEST MODELS
+# ============================
 
-    return resp.json()
+class AnalyzeProfilesRequest(BaseModel):
+    usernames: List[str]
 
+class ContentIdeasRequest(BaseModel):
+    data: List[Any]
 
-# ----------------------------
-# Resolve media_id via Business Discovery
-# ----------------------------
-def resolve_media_id(username: str, post_url: str, limit: int = 25) -> str:
-    """
-    Resolve media_id for a recent post using Business Discovery.
-    """
+class ImageAnalyzeRequest(BaseModel):
+    media_url: str
 
-    url = f"{GRAPH_BASE}/{IG_USER_ID}"
-    fields = (
-        f"business_discovery.username({username}){{"
-        f"media.limit({limit}){{id,permalink}}"
-        f"}}"
-    )
+class ReelAnalyzeRequest(BaseModel):
+    video_url: Optional[str] = None
+    media_url: Optional[str] = None
+    url: Optional[str] = None
+    reel_url: Optional[str] = None
 
-    data = _get(url, {"fields": fields})
-    bd = data.get("business_discovery")
+class ReelAudioRequest(BaseModel):
+    media_url: str
 
-    if not bd or "media" not in bd:
-        raise IGError(f"Business Discovery not available for @{username}")
+class TopPostsRequest(BaseModel):
+    username: str
+    limit: int = 5
 
-    for media in bd["media"].get("data", []):
-        if media.get("permalink") == post_url:
-            return media["id"]
+class IndustryAnalyzeRequest(BaseModel):
+    keywords: List[str]
+    news_api_key: Optional[str] = None
 
-    raise IGError(
-        "Post not found in recent media (Business Discovery limitation)."
-    )
+# ✅ CDN-ONLY REQUEST MODEL
+class PostCDNRequest(BaseModel):
+    username: str
+    post_url: str
 
+# ============================
+# ROUTES
+# ============================
 
-# ----------------------------
-# Fetch CDN URL only
-# ----------------------------
-def fetch_cdn_url(media_id: str) -> str:
-    """
-    Fetch ONLY the CDN media URL.
-    """
+@app.get("/")
+def home():
+    return {"status": "InstaEye backend running"}
 
-    url = f"{GRAPH_BASE}/{media_id}"
-    data = _get(url, {"fields": "media_url"})
+@app.post("/analyze")
+def analyze_profile_api(req: AnalyzeProfilesRequest):
+    return analyze_profiles(req.usernames)
 
-    media_url = data.get("media_url")
-    if not media_url:
-        raise IGError("media_url not available for this post")
+@app.post("/analyze-image")
+def analyze_image_api(req: ImageAnalyzeRequest):
+    return analyze_image(req.media_url)
 
-    return media_url
+@app.post("/analyze-reel")
+def analyze_reel_api(req: ReelAnalyzeRequest):
+    url = req.video_url or req.media_url or req.url or req.reel_url
+    if not url:
+        return {"status": "error", "message": "No video URL provided"}
+    return analyze_reel(url)
 
-
-# ----------------------------
-# PUBLIC FUNCTION
-# ----------------------------
-def get_post_cdn_url(username: str, post_url: str) -> Dict[str, Any]:
-    """
-    Input:
-      - username (business/creator account)
-      - post_url (recent post)
-
-    Output:
-      - CDN media URL only
-    """
-
+@app.post("/analyze-reel-audio")
+def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
-        media_id = resolve_media_id(username, post_url)
-        cdn_url = fetch_cdn_url(media_id)
-
-        return {
-            "status": "success",
-            "username": username,
-            "post_url": post_url,
-            "cdn_url": cdn_url
-        }
-
+        return process_audio(req.media_url)
     except Exception as e:
+        traceback.print_exc()
         return {
             "status": "error",
-            "username": username,
-            "post_url": post_url,
-            "error": str(e)
+            "stage": "audio_pipeline",
+            "message": str(e)
         }
+
+@app.post("/analyze-industry")
+def analyze_industry_api(req: IndustryAnalyzeRequest):
+    return analyze_industry(req.keywords, req.news_api_key)
+
+@app.post("/top-posts")
+def top_posts_api(req: TopPostsRequest):
+    return get_top_posts(req.username, req.limit)
+
+@app.post("/generate-content-ideas")
+def generate_ideas_api(req: ContentIdeasRequest):
+    return generate_content(req.data)
+
+# ======================================================
+# ✅ CDN-ONLY POST RESOLVER (NEW, CLEAN, STABLE)
+# ======================================================
+
+@app.post("/resolve/post-cdn")
+def resolve_post_cdn_api(req: PostCDNRequest):
+    """
+    Resolve ONLY the CDN media URL for a post
+    (Business Discovery, recent posts only)
+    """
+    return get_post_cdn_url(
+        username=req.username,
+        post_url=req.post_url
+    )
