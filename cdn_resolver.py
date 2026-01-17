@@ -1,6 +1,6 @@
 import os
 import requests
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 # ----------------------------
 # Environment Setup
@@ -64,11 +64,11 @@ def resolve_media_id(username: str, post_url: str, limit: int = 25) -> str:
 
 
 # ----------------------------
-# Fetch CDN URL only
+# Fetch CDN URL by media_id
 # ----------------------------
-def fetch_cdn_url(media_id: str) -> str:
+def fetch_cdn_url_by_media_id(media_id: str) -> str:
     """
-    Fetch ONLY the CDN media URL.
+    Fetch CDN URL directly using an authorized media_id.
     """
 
     url = f"{GRAPH_BASE}/{media_id}"
@@ -76,38 +76,59 @@ def fetch_cdn_url(media_id: str) -> str:
 
     media_url = data.get("media_url")
     if not media_url:
-        raise IGError("media_url not available for this post")
+        raise IGError("media_url not accessible for this media_id")
 
     return media_url
 
 
 # ----------------------------
-# PUBLIC FUNCTION
+# PUBLIC FUNCTION (UNIFIED)
 # ----------------------------
-def get_post_cdn_url(username: str, post_url: str) -> Dict[str, Any]:
+def get_post_cdn_url(
+    *,
+    media_id: Optional[str] = None,
+    username: Optional[str] = None,
+    post_url: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Input:
-      - username (business/creator account)
-      - post_url (recent post)
+    Resolve CDN URL via:
+      - media_id (preferred, fastest)
+      - OR username + post_url (Business Discovery)
 
-    Output:
-      - CDN media URL only
+    Returns CDN URL only.
     """
 
     try:
-        media_id = resolve_media_id(username, post_url)
-        cdn_url = fetch_cdn_url(media_id)
+        # Path 1: media_id provided (BEST CASE)
+        if media_id:
+            cdn_url = fetch_cdn_url_by_media_id(media_id)
+            return {
+                "status": "success",
+                "media_id": media_id,
+                "cdn_url": cdn_url,
+                "source": "media_id"
+            }
 
-        return {
-            "status": "success",
-            "username": username,
-            "post_url": post_url,
-            "cdn_url": cdn_url
-        }
+        # Path 2: Resolve media_id via Business Discovery
+        if username and post_url:
+            resolved_media_id = resolve_media_id(username, post_url)
+            cdn_url = fetch_cdn_url_by_media_id(resolved_media_id)
+
+            return {
+                "status": "success",
+                "username": username,
+                "post_url": post_url,
+                "media_id": resolved_media_id,
+                "cdn_url": cdn_url,
+                "source": "business_discovery"
+            }
+
+        raise IGError("Provide either media_id OR username + post_url")
 
     except Exception as e:
         return {
             "status": "error",
+            "media_id": media_id,
             "username": username,
             "post_url": post_url,
             "error": str(e)
