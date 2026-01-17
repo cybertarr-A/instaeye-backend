@@ -14,28 +14,17 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
 
-if not IG_ACCESS_TOKEN:
-    raise RuntimeError("IG_ACCESS_TOKEN not set")
-
-if not IG_PARENT_USER_ID:
-    raise RuntimeError("IG_PARENT_USER_ID not set")
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY not set")
-
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 # --------------------------------------------------
-# AI ANALYZER (already used elsewhere in your system)
+# AI ANALYZER
 # --------------------------------------------------
 
 def ai_analyze_content(media_url: str) -> str:
+    if not media_url:
+        return ""
+
     try:
-        r = requests.get(media_url, timeout=20)
-        r.raise_for_status()
-
-        image_b64 = r.content.encode("base64") if False else None  # placeholder safety
-
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -67,11 +56,14 @@ def extract_shortcode(insta_url: str) -> Optional[str]:
     return match.group(2)
 
 # --------------------------------------------------
-# UTIL: Resolve shortcode → media ID
+# UTIL: Resolve shortcode → media object
 # --------------------------------------------------
 
 def resolve_media_id(shortcode: str) -> Optional[Dict]:
-    url = f"{GRAPH_API_BASE}/{IG_USER_ID}/media"
+    if not IG_PARENT_USER_ID or not IG_ACCESS_TOKEN:
+        return None
+
+    url = f"{GRAPH_API_BASE}/{IG_PARENT_USER_ID}/media"
     params = {
         "fields": (
             "id,shortcode,media_type,permalink,media_url,"
@@ -104,6 +96,9 @@ def resolve_media_id(shortcode: str) -> Optional[Dict]:
 # --------------------------------------------------
 
 def fetch_post_insights(media_id: str, media_type: str) -> Dict:
+    if not IG_ACCESS_TOKEN:
+        return {}
+
     if media_type in ("VIDEO", "REELS"):
         metrics = "impressions,reach,plays,saved,shares"
     else:
@@ -126,7 +121,7 @@ def fetch_post_insights(media_id: str, media_type: str) -> Dict:
     return insights
 
 # --------------------------------------------------
-# MAIN ANALYZER (instagram_analyzer-style)
+# MAIN ANALYZER
 # --------------------------------------------------
 
 def analyze_posts(post_urls: List[str]) -> Dict:
@@ -150,7 +145,7 @@ def analyze_posts(post_urls: List[str]) -> Dict:
                 "url": url,
                 "shortcode": shortcode,
                 "status": "not_found",
-                "message": "Post not found for this account",
+                "message": "Post not found or missing permissions",
             })
             continue
 
