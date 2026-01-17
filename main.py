@@ -57,6 +57,7 @@ class IndustryAnalyzeRequest(BaseModel):
 
 # ✅ SINGLE POST REQUEST MODEL
 class SinglePostRequest(BaseModel):
+    username: str
     post_url: str
 
 # ============================
