@@ -1,17 +1,17 @@
 import os
 import re
 import requests
-from typing import Dict, Any
-from urllib.parse import urlparse
+from typing import Dict, Any, Optional
 
 # ----------------------------
 # Environment Setup
 # ----------------------------
 ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
+IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
 GRAPH_BASE = "https://graph.facebook.com/v24.0"
 
-if not ACCESS_TOKEN:
-    print("⚠️ WARNING: IG_ACCESS_TOKEN not set.")
+if not ACCESS_TOKEN or not IG_USER_ID:
+    print("⚠️ WARNING: IG_ACCESS_TOKEN or IG_PARENT_USER_ID not set.")
 
 
 # ----------------------------
@@ -43,52 +43,56 @@ def extract_hashtags(caption: str):
     return re.findall(r"#(\w+)", caption)
 
 
-def extract_shortcode(post_url: str) -> str:
-    parsed = urlparse(post_url)
-    parts = parsed.path.strip("/").split("/")
-    if len(parts) >= 2:
-        return parts[1]
-    raise IGError("Invalid Instagram post URL")
-
-
 # ----------------------------
-# Resolve URL → Media ID
+# Business Discovery: Resolve media_id by permalink
 # ----------------------------
-def resolve_media_id_from_url(post_url: str) -> str:
-    oembed_url = "https://graph.facebook.com/v24.0/instagram_oembed"
+def resolve_media_id_via_business_discovery(
+    username: str,
+    post_url: str,
+    limit: int = 25
+) -> str:
+    """
+    Fetch recent media via Business Discovery and
+    match permalink to resolve media_id.
+    """
 
-    data = _get(
-        oembed_url,
-        {
-            "url": post_url,
-            "fields": "media_id"
-        }
+    url = f"{GRAPH_BASE}/{IG_USER_ID}"
+    fields = (
+        f"business_discovery.username({username}){{"
+        f"media.limit({limit}){{id,permalink}}"
+        f"}}"
     )
 
-    media_id = data.get("media_id")
-    if not media_id:
-        raise IGError("Unable to resolve media_id from URL")
+    data = _get(url, {"fields": fields})
+    bd = data.get("business_discovery")
 
-    return media_id
+    if not bd or "media" not in bd:
+        raise IGError(f"Business Discovery not available for @{username}")
+
+    for media in bd["media"].get("data", []):
+        if media.get("permalink") == post_url:
+            return media["id"]
+
+    raise IGError(
+        "Post not found in recent media. "
+        "Instagram only allows access to recent posts via Business Discovery."
+    )
 
 
 # ----------------------------
-# Fetch Media + Insights
+# Fetch Public Media Data
 # ----------------------------
-def fetch_single_media(media_id: str) -> Dict[str, Any]:
+def fetch_public_media(media_id: str) -> Dict[str, Any]:
+    """
+    Fetch public fields only (allowed for other users).
+    """
     fields = (
         "id,caption,media_type,media_product_type,permalink,"
-        "media_url,thumbnail_url,timestamp,like_count,comments_count,"
-        "insights.metric(plays,reach,impressions,saved,shares,total_interactions)"
+        "media_url,thumbnail_url,timestamp,like_count,comments_count"
     )
 
     url = f"{GRAPH_BASE}/{media_id}"
     data = _get(url, {"fields": fields})
-
-    insights = {}
-    for metric in data.get("insights", {}).get("data", []):
-        if metric.get("values"):
-            insights[metric["name"]] = metric["values"][0].get("value", 0)
 
     caption = data.get("caption", "")
 
@@ -104,25 +108,32 @@ def fetch_single_media(media_id: str) -> Dict[str, Any]:
         "thumbnail_url": data.get("thumbnail_url"),
         "likes": data.get("like_count", 0),
         "comments": data.get("comments_count", 0),
-        "insights": insights
+        "engagement": {
+            "likes": data.get("like_count", 0),
+            "comments": data.get("comments_count", 0),
+            "total": data.get("like_count", 0) + data.get("comments_count", 0)
+        }
     }
 
 
 # ----------------------------
-# PUBLIC FUNCTION (USED BY main.py)
+# PUBLIC FUNCTION
 # ----------------------------
-def analyze_single_post(post_url: str) -> Dict[str, Any]:
+def analyze_single_post(
+    username: str,
+    post_url: str
+) -> Dict[str, Any]:
     """
-    Single Post Analyzer
-    Input: post_url (string)
-    Output: clean post data
+    Analyze a specific post from another user using Business Discovery.
     """
+
     try:
-        media_id = resolve_media_id_from_url(post_url)
-        media_data = fetch_single_media(media_id)
+        media_id = resolve_media_id_via_business_discovery(username, post_url)
+        media_data = fetch_public_media(media_id)
 
         return {
             "status": "success",
+            "username": username,
             "post_url": post_url,
             "media": media_data
         }
@@ -130,6 +141,7 @@ def analyze_single_post(post_url: str) -> Dict[str, Any]:
     except Exception as e:
         return {
             "status": "error",
+            "username": username,
             "post_url": post_url,
             "error": str(e)
         }
