@@ -9,7 +9,7 @@ from openai import OpenAI
 # --------------------------------------------------
 
 IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_PARENT_USER_ID = os.getenv("IG_USER_ID")
+IG_PARENT_USER_ID = os.getenv("IG_PARENT_USER_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
