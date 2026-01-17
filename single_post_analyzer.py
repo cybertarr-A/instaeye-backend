@@ -1,182 +1,150 @@
 import os
 import re
 import requests
-from typing import List, Dict, Optional
-from openai import OpenAI
+from typing import Dict, Any
+from urllib.parse import urlparse
 
-# --------------------------------------------------
-# CONFIG
-# --------------------------------------------------
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 
-IG_ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_PARENT_USER_ID = os.getenv("IG_PARENT_USER_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# ----------------------------
+# App Init (IMPORTANT)
+# ----------------------------
+app = FastAPI(title="Single Post Analyzer", version="1.0.0")
 
-GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
+# ----------------------------
+# Environment Setup
+# ----------------------------
+ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
+IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
+GRAPH_BASE = "https://graph.facebook.com/v24.0"
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+if not ACCESS_TOKEN or not IG_USER_ID:
+    print("⚠️ WARNING: IG_ACCESS_TOKEN or IG_PARENT_USER_ID not set.")
 
-# --------------------------------------------------
-# AI ANALYZER
-# --------------------------------------------------
 
-def ai_analyze_content(media_url: str) -> str:
-    if not media_url:
-        return ""
+# ----------------------------
+# Errors
+# ----------------------------
+class IGError(Exception):
+    pass
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": (
-                        "Analyze this Instagram post media and summarize "
-                        "the content intent, tone, and category in 2–3 lines.\n\n"
-                        f"Media URL: {media_url}"
-                    ),
-                }
-            ],
-            temperature=0.3,
-        )
 
-        return response.choices[0].message.content.strip()
+# ----------------------------
+# Request Model (n8n-safe)
+# ----------------------------
+class PostAnalyzeRequest(BaseModel):
+    post_url: str
 
-    except Exception as e:
-        return f"AI analysis failed: {str(e)}"
 
-# --------------------------------------------------
-# UTIL: Extract shortcode
-# --------------------------------------------------
+# ----------------------------
+# HTTP Helper
+# ----------------------------
+def _get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    params = {**params, "access_token": ACCESS_TOKEN}
+    resp = requests.get(url, params=params, timeout=30)
 
-def extract_shortcode(insta_url: str) -> Optional[str]:
-    match = re.search(r"/(p|reel|tv)/([^/?#]+)/", insta_url)
-    if not match:
-        return None
-    return match.group(2)
+    if resp.status_code != 200:
+        raise IGError(f"GET {url} -> {resp.status_code}: {resp.text}")
 
-# --------------------------------------------------
-# UTIL: Resolve shortcode → media object
-# --------------------------------------------------
+    return resp.json()
 
-def resolve_media_id(shortcode: str) -> Optional[Dict]:
-    if not IG_PARENT_USER_ID or not IG_ACCESS_TOKEN:
-        return None
 
-    url = f"{GRAPH_API_BASE}/{IG_PARENT_USER_ID}/media"
-    params = {
-        "fields": (
-            "id,shortcode,media_type,permalink,media_url,"
-            "thumbnail_url,like_count,comments_count,caption,timestamp"
-        ),
-        "access_token": IG_ACCESS_TOKEN,
-        "limit": 50,
-    }
+# ----------------------------
+# Utilities
+# ----------------------------
+def extract_hashtags(caption: str):
+    if not caption:
+        return []
+    return re.findall(r"#(\w+)", caption)
 
-    while True:
-        r = requests.get(url, params=params, timeout=30)
-        r.raise_for_status()
-        data = r.json()
 
-        for item in data.get("data", []):
-            if item.get("shortcode") == shortcode:
-                return item
+def extract_shortcode(post_url: str) -> str:
+    parsed = urlparse(post_url)
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) >= 2:
+        return parts[1]
+    raise IGError("Invalid Instagram post URL")
 
-        next_url = data.get("paging", {}).get("next")
-        if not next_url:
-            break
 
-        url = next_url
-        params = None
+# ----------------------------
+# Resolve URL → Media ID
+# ----------------------------
+def resolve_media_id_from_url(post_url: str) -> str:
+    oembed_url = "https://graph.facebook.com/v24.0/instagram_oembed"
 
-    return None
+    data = _get(
+        oembed_url,
+        {
+            "url": post_url,
+            "fields": "media_id"
+        }
+    )
 
-# --------------------------------------------------
-# FETCH POST INSIGHTS
-# --------------------------------------------------
+    media_id = data.get("media_id")
+    if not media_id:
+        raise IGError("Unable to resolve media_id from URL")
 
-def fetch_post_insights(media_id: str, media_type: str) -> Dict:
-    if not IG_ACCESS_TOKEN:
-        return {}
+    return media_id
 
-    if media_type in ("VIDEO", "REELS"):
-        metrics = "impressions,reach,plays,saved,shares"
-    else:
-        metrics = "impressions,reach,saved"
 
-    url = f"{GRAPH_API_BASE}/{media_id}/insights"
-    params = {
-        "metric": metrics,
-        "access_token": IG_ACCESS_TOKEN,
-    }
+# ----------------------------
+# Fetch Media + Insights
+# ----------------------------
+def fetch_single_media(media_id: str) -> Dict[str, Any]:
+    fields = (
+        "id,caption,media_type,media_product_type,permalink,"
+        "media_url,thumbnail_url,timestamp,like_count,comments_count,"
+        "insights.metric(plays,reach,impressions,saved,shares,total_interactions)"
+    )
 
-    r = requests.get(url, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
+    url = f"{GRAPH_BASE}/{media_id}"
+    data = _get(url, {"fields": fields})
 
     insights = {}
-    for item in data.get("data", []):
-        insights[item["name"]] = item["values"][0]["value"]
+    for metric in data.get("insights", {}).get("data", []):
+        if metric.get("values"):
+            insights[metric["name"]] = metric["values"][0].get("value", 0)
 
-    return insights
-
-# --------------------------------------------------
-# MAIN ANALYZER
-# --------------------------------------------------
-
-def analyze_posts(post_urls: List[str]) -> Dict:
-    posts = []
-
-    for url in post_urls:
-        shortcode = extract_shortcode(url)
-
-        if not shortcode:
-            posts.append({
-                "url": url,
-                "status": "error",
-                "message": "Invalid Instagram post URL",
-            })
-            continue
-
-        m = resolve_media_id(shortcode)
-
-        if not m:
-            posts.append({
-                "url": url,
-                "shortcode": shortcode,
-                "status": "not_found",
-                "message": "Post not found or missing permissions",
-            })
-            continue
-
-        caption = m.get("caption", "")
-        hashtags = [h for h in caption.split() if h.startswith("#")]
-
-        try:
-            insights = fetch_post_insights(m["id"], m["media_type"])
-        except Exception as e:
-            insights = {"error": str(e)}
-
-        posts.append({
-            "id": m.get("id"),
-            "type": m.get("media_type"),
-            "caption": caption,
-            "hashtags": hashtags,
-            "timestamp": m.get("timestamp"),
-            "permalink": m.get("permalink"),
-            "media_url": m.get("media_url"),
-            "thumbnail_url": m.get("thumbnail_url"),
-            "likes": m.get("like_count", 0),
-            "comments": m.get("comments_count", 0),
-            "insights": insights,
-            "transcript": "",
-            "ai_summary": ai_analyze_content(
-                m.get("media_url") or m.get("thumbnail_url")
-            ),
-        })
+    caption = data.get("caption", "")
 
     return {
-        "status": "ok",
-        "count": len(posts),
-        "posts": posts,
+        "id": data.get("id"),
+        "type": data.get("media_type"),
+        "product_type": data.get("media_product_type"),
+        "caption": caption,
+        "hashtags": extract_hashtags(caption),
+        "timestamp": data.get("timestamp"),
+        "permalink": data.get("permalink"),
+        "media_url": data.get("media_url"),
+        "thumbnail_url": data.get("thumbnail_url"),
+        "likes": data.get("like_count", 0),
+        "comments": data.get("comments_count", 0),
+        "insights": insights
     }
+
+
+# ----------------------------
+# Routes
+# ----------------------------
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/analyze/post")
+def analyze_single_post(req: PostAnalyzeRequest):
+    try:
+        media_id = resolve_media_id_from_url(req.post_url)
+        media_data = fetch_single_media(media_id)
+
+        return {
+            "status": "success",
+            "post_url": req.post_url,
+            "media": media_data
+        }
+
+    except IGError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
