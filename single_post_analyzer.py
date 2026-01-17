@@ -4,23 +4,14 @@ import requests
 from typing import Dict, Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-
-# ----------------------------
-# App Init (IMPORTANT)
-# ----------------------------
-app = FastAPI(title="Single Post Analyzer", version="1.0.0")
-
 # ----------------------------
 # Environment Setup
 # ----------------------------
 ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
-IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
 GRAPH_BASE = "https://graph.facebook.com/v24.0"
 
-if not ACCESS_TOKEN or not IG_USER_ID:
-    print("⚠️ WARNING: IG_ACCESS_TOKEN or IG_PARENT_USER_ID not set.")
+if not ACCESS_TOKEN:
+    print("⚠️ WARNING: IG_ACCESS_TOKEN not set.")
 
 
 # ----------------------------
@@ -28,13 +19,6 @@ if not ACCESS_TOKEN or not IG_USER_ID:
 # ----------------------------
 class IGError(Exception):
     pass
-
-
-# ----------------------------
-# Request Model (n8n-safe)
-# ----------------------------
-class PostAnalyzeRequest(BaseModel):
-    post_url: str
 
 
 # ----------------------------
@@ -125,26 +109,27 @@ def fetch_single_media(media_id: str) -> Dict[str, Any]:
 
 
 # ----------------------------
-# Routes
+# PUBLIC FUNCTION (USED BY main.py)
 # ----------------------------
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
-@app.post("/analyze/post")
-def analyze_single_post(req: PostAnalyzeRequest):
+def analyze_single_post(post_url: str) -> Dict[str, Any]:
+    """
+    Single Post Analyzer
+    Input: post_url (string)
+    Output: clean post data
+    """
     try:
-        media_id = resolve_media_id_from_url(req.post_url)
+        media_id = resolve_media_id_from_url(post_url)
         media_data = fetch_single_media(media_id)
 
         return {
             "status": "success",
-            "post_url": req.post_url,
+            "post_url": post_url,
             "media": media_data
         }
 
-    except IGError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "status": "error",
+            "post_url": post_url,
+            "error": str(e)
+        }
