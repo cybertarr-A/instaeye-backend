@@ -20,7 +20,7 @@ from media_splitter import router as split_router
 # CDN resolvers
 # ----------------------------
 
-from cdn_resolver import get_post_cdn_url as official_cdn_resolver
+from cdn_resolver import get_post_cdn_url
 from rapidapi_instagram_cdn import get_recent_cdns as rapidapi_cdn_resolver
 
 
