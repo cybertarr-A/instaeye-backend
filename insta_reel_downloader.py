@@ -3,21 +3,22 @@ import json
 import os
 import requests
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 
 # =========================
 # CONFIG
 # =========================
 
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST")  # e.g. instagram-downloader-api.p.rapidapi.com
-RAPIDAPI_ENDPOINT = os.getenv("RAPIDAPI_ENDPOINT")  
-# e.g. https://instagram-downloader-api.p.rapidapi.com/index
 
-if not RAPIDAPI_KEY or not RAPIDAPI_HOST or not RAPIDAPI_ENDPOINT:
+# Fixed for this specific API
+RAPIDAPI_HOST = "instagram-reels-downloader-api.p.rapidapi.com"
+RAPIDAPI_BASE_URL = f"https://{RAPIDAPI_HOST}"
+
+if not RAPIDAPI_KEY:
     print(json.dumps({
         "status": "error",
-        "message": "RapidAPI configuration missing (KEY / HOST / ENDPOINT)"
+        "message": "RAPIDAPI_KEY not set"
     }))
     sys.exit(1)
 
@@ -48,7 +49,7 @@ def main():
     if len(sys.argv) < 2:
         print(json.dumps({
             "status": "error",
-            "message": "Instagram post URL required"
+            "message": "Instagram reel/post URL required"
         }))
         sys.exit(1)
 
@@ -59,17 +60,11 @@ def main():
         "x-rapidapi-host": RAPIDAPI_HOST
     }
 
-    params = {
-        "url": post_url
-    }
+    query = urlencode({"url": post_url})
+    endpoint = f"{RAPIDAPI_BASE_URL}/download?{query}"
 
     try:
-        response = requests.get(
-            RAPIDAPI_ENDPOINT,
-            headers=headers,
-            params=params,
-            timeout=30
-        )
+        response = requests.get(endpoint, headers=headers, timeout=30)
         response.raise_for_status()
         data = response.json()
 
@@ -81,14 +76,22 @@ def main():
         }))
         sys.exit(1)
 
-    # 🔍 Try to extract video URL (generic logic)
-    media_items = data.get("media") or data.get("data") or []
+    # =========================
+    # EXTRACT VIDEO URL
+    # =========================
+    # Typical response:
+    # {
+    #   "status": true,
+    #   "data": {
+    #       "video_url": "https://..."
+    #   }
+    # }
 
-    video_url = None
-    for item in media_items:
-        if item.get("type") == "video" or item.get("extension") == "mp4":
-            video_url = item.get("url")
-            break
+    video_url = (
+        data.get("video_url")
+        or (data.get("data") or {}).get("video_url")
+        or (data.get("data") or {}).get("url")
+    )
 
     if not video_url:
         print(json.dumps({
