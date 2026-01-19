@@ -6,7 +6,6 @@ import os
 import requests
 import subprocess
 from pathlib import Path
-import json
 
 # ----------------------------
 # Core modules
@@ -37,8 +36,7 @@ REELS_DIR.mkdir(parents=True, exist_ok=True)
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.6")
-
+app = FastAPI(title="InstaEye Backend", version="1.6.1")
 app.include_router(split_router)
 
 
@@ -77,11 +75,12 @@ class InstagramDiscoveryRequest(BaseModel):
     page: int = 0
     num_results: int = 10
 
-# 🔽 NEW: Reel Download
+# ✅ FIXED: Flexible reel download schema
 class ReelDownloadRequest(BaseModel):
     reel_url: Optional[str] = None
     post_url: Optional[str] = None
     url: Optional[str] = None
+
 
 # ============================
 # HELPER FUNCTIONS
@@ -114,7 +113,6 @@ def extract_instagram_profiles(serp_data: dict) -> List[dict]:
 
     for item in serp_data.get("organic_results", []):
         link = item.get("link", "")
-
         if "instagram.com" not in link:
             continue
 
@@ -128,9 +126,10 @@ def extract_instagram_profiles(serp_data: dict) -> List[dict]:
 
 
 def download_instagram_reel(reel_url: str) -> dict:
-    """
-    Download Instagram reel using yt-dlp
-    """
+    if not reel_url:
+        raise ValueError("Invalid reel/post URL")
+
+    reel_url = reel_url.strip()
 
     output_template = str(REELS_DIR / "%(id)s.%(ext)s")
 
@@ -183,13 +182,13 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
     url = req.video_url or req.media_url or req.url or req.reel_url
     if not url:
         return {"status": "error", "message": "No video URL provided"}
-    return analyze_reel(url)
+    return analyze_reel(url.strip())
 
 
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
     try:
-        return process_audio(req.media_url)
+        return process_audio(req.media_url.strip())
     except Exception as e:
         traceback.print_exc()
         return {
@@ -199,10 +198,21 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
         }
 
 
+# ✅ FIXED: Safe, flexible reel downloader
 @app.post("/download-reel")
 def download_reel_api(req: ReelDownloadRequest):
     try:
-        return download_instagram_reel(req.reel_url)
+        url = req.reel_url or req.post_url or req.url
+
+        if not url:
+            return {
+                "status": "error",
+                "stage": "reel_download",
+                "message": "No reel/post URL provided (expected reel_url, post_url, or url)"
+            }
+
+        return download_instagram_reel(url)
+
     except Exception as e:
         traceback.print_exc()
         return {
