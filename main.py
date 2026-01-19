@@ -4,6 +4,9 @@ from typing import List, Any, Optional
 import traceback
 import os
 import requests
+import subprocess
+from pathlib import Path
+import json
 
 # ----------------------------
 # Core modules
@@ -26,12 +29,15 @@ from media_splitter import router as split_router
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 SERPAPI_URL = "https://serpapi.com/search.json"
 
+REELS_DIR = Path("data/reels")
+REELS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # ============================
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.5")
+app = FastAPI(title="InstaEye Backend", version="1.6")
 
 app.include_router(split_router)
 
@@ -66,11 +72,14 @@ class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
-# 🔹 Instagram Discovery
 class InstagramDiscoveryRequest(BaseModel):
     keywords: List[str]
     page: int = 0
     num_results: int = 10
+
+# 🔽 NEW: Reel Download
+class ReelDownloadRequest(BaseModel):
+    reel_url: str
 
 
 # ============================
@@ -117,6 +126,38 @@ def extract_instagram_profiles(serp_data: dict) -> List[dict]:
     return profiles
 
 
+def download_instagram_reel(reel_url: str) -> dict:
+    """
+    Download Instagram reel using yt-dlp
+    """
+
+    output_template = str(REELS_DIR / "%(id)s.%(ext)s")
+
+    command = [
+        "yt-dlp",
+        "--no-playlist",
+        "-f", "bv*+ba/b",
+        "--merge-output-format", "mp4",
+        "-o", output_template,
+        reel_url
+    ]
+
+    process = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+
+    if process.returncode != 0:
+        raise RuntimeError(process.stderr.strip())
+
+    return {
+        "status": "ok",
+        "message": "Reel downloaded successfully"
+    }
+
+
 # ============================
 # ROUTES
 # ============================
@@ -157,6 +198,19 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
         }
 
 
+@app.post("/download-reel")
+def download_reel_api(req: ReelDownloadRequest):
+    try:
+        return download_instagram_reel(req.reel_url)
+    except Exception as e:
+        traceback.print_exc()
+        return {
+            "status": "error",
+            "stage": "reel_download",
+            "message": str(e)
+        }
+
+
 @app.post("/analyze-industry")
 def analyze_industry_api(req: IndustryAnalyzeRequest):
     return analyze_industry(req.keywords, req.news_api_key)
@@ -172,16 +226,8 @@ def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
 
 
-# =====================================================
-# 🔍 INSTAGRAM ACCOUNT DISCOVERY (SERPAPI)
-# =====================================================
-
 @app.post("/discover/instagram-accounts")
 def discover_instagram_accounts(req: InstagramDiscoveryRequest):
-    """
-    Discover Instagram accounts using Google index via SerpAPI
-    """
-
     try:
         query = build_google_instagram_query(req.keywords)
         serp_data = serpapi_search(query, req.page, req.num_results)
