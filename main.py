@@ -79,8 +79,9 @@ class InstagramDiscoveryRequest(BaseModel):
 
 # 🔽 NEW: Reel Download
 class ReelDownloadRequest(BaseModel):
-    reel_url: str
-
+    reel_url: Optional[str] = None
+    post_url: Optional[str] = None
+    url: Optional[str] = None
 
 # ============================
 # HELPER FUNCTIONS
