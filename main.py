@@ -41,8 +41,15 @@ REELS_DIR.mkdir(parents=True, exist_ok=True)
 if not RAPIDAPI_KEY:
     raise RuntimeError("RAPIDAPI_KEY not set")
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("Supabase credentials not set")
+def get_supabase_client() -> Client:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        raise RuntimeError(
+            "Supabase credentials not configured. "
+            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY."
+        )
+
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
