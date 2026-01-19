@@ -4,8 +4,8 @@ from typing import List, Any, Optional
 import traceback
 import os
 import requests
-import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 # ----------------------------
 # Core modules
@@ -28,6 +28,10 @@ from media_splitter import router as split_router
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
 SERPAPI_URL = "https://serpapi.com/search.json"
 
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
+RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST")
+RAPIDAPI_ENDPOINT = os.getenv("RAPIDAPI_ENDPOINT")
+
 REELS_DIR = Path("data/reels")
 REELS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -36,7 +40,7 @@ REELS_DIR.mkdir(parents=True, exist_ok=True)
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.6.1")
+app = FastAPI(title="InstaEye Backend", version="1.7.0")
 app.include_router(split_router)
 
 
@@ -75,7 +79,7 @@ class InstagramDiscoveryRequest(BaseModel):
     page: int = 0
     num_results: int = 10
 
-# ✅ FIXED: Flexible reel download schema
+# ✅ RapidAPI downloader schema
 class ReelDownloadRequest(BaseModel):
     reel_url: Optional[str] = None
     post_url: Optional[str] = None
@@ -125,36 +129,63 @@ def extract_instagram_profiles(serp_data: dict) -> List[dict]:
     return profiles
 
 
-def download_instagram_reel(reel_url: str) -> dict:
-    if not reel_url:
-        raise ValueError("Invalid reel/post URL")
+def extract_id_from_url(url: str) -> str:
+    path = urlparse(url).path.strip("/")
+    return path.split("/")[-1]
 
-    reel_url = reel_url.strip()
 
-    output_template = str(REELS_DIR / "%(id)s.%(ext)s")
+def download_file(url: str, output_path: Path):
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
+        with open(output_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
 
-    command = [
-        "yt-dlp",
-        "--no-playlist",
-        "-f", "bv*+ba/b",
-        "--merge-output-format", "mp4",
-        "-o", output_template,
-        reel_url
-    ]
 
-    process = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True
+def download_reel_via_rapidapi(post_url: str) -> dict:
+    if not RAPIDAPI_KEY or not RAPIDAPI_HOST or not RAPIDAPI_ENDPOINT:
+        raise RuntimeError("RapidAPI configuration missing")
+
+    headers = {
+        "x-rapidapi-key": RAPIDAPI_KEY,
+        "x-rapidapi-host": RAPIDAPI_HOST
+    }
+
+    params = {
+        "url": post_url.strip()
+    }
+
+    response = requests.get(
+        RAPIDAPI_ENDPOINT,
+        headers=headers,
+        params=params,
+        timeout=30
     )
+    response.raise_for_status()
 
-    if process.returncode != 0:
-        raise RuntimeError(process.stderr.strip())
+    data = response.json()
+
+    media_items = data.get("media") or data.get("data") or []
+    video_url = None
+
+    for item in media_items:
+        if item.get("type") == "video" or item.get("extension") == "mp4":
+            video_url = item.get("url")
+            break
+
+    if not video_url:
+        raise RuntimeError("No downloadable video found from RapidAPI")
+
+    video_id = extract_id_from_url(post_url)
+    output_path = REELS_DIR / f"{video_id}.mp4"
+
+    download_file(video_url, output_path)
 
     return {
         "status": "ok",
-        "message": "Reel downloaded successfully"
+        "message": "Reel downloaded successfully via RapidAPI",
+        "file": str(output_path)
     }
 
 
@@ -198,20 +229,19 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
         }
 
 
-# ✅ FIXED: Safe, flexible reel downloader
+# ✅ RapidAPI-powered reel downloader
 @app.post("/download-reel")
 def download_reel_api(req: ReelDownloadRequest):
     try:
         url = req.reel_url or req.post_url or req.url
-
         if not url:
             return {
                 "status": "error",
                 "stage": "reel_download",
-                "message": "No reel/post URL provided (expected reel_url, post_url, or url)"
+                "message": "No reel/post URL provided"
             }
 
-        return download_instagram_reel(url)
+        return download_reel_via_rapidapi(url)
 
     except Exception as e:
         traceback.print_exc()
