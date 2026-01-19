@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Any, Optional
 import traceback
@@ -41,24 +42,25 @@ REELS_DIR.mkdir(parents=True, exist_ok=True)
 if not RAPIDAPI_KEY:
     raise RuntimeError("RAPIDAPI_KEY not set")
 
+
+# ============================
+# LAZY SUPABASE
+# ============================
+
 def get_supabase_client() -> Client:
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
         raise RuntimeError(
             "Supabase credentials not configured. "
             "Set SUPABASE_URL and SUPABASE_SERVICE_KEY."
         )
-
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
-
-
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 
 
 # ============================
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="1.9.0")
+app = FastAPI(title="InstaEye Backend", version="2.0.0")
 app.include_router(split_router)
 
 
@@ -104,8 +106,7 @@ class ReelDownloadRequest(BaseModel):
 
 def normalize_instagram_url(url: str) -> str:
     parsed = urlparse(url.strip())
-    clean = parsed._replace(query="", fragment="")
-    return urlunparse(clean)
+    return urlunparse(parsed._replace(query="", fragment=""))
 
 
 def extract_id_from_url(url: str) -> str:
@@ -134,22 +135,20 @@ def download_file(url: str, output_path: Path):
     with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(output_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
+            for chunk in r.iter_content(8192):
                 if chunk:
                     f.write(chunk)
 
 
 def upload_to_supabase(local_path: Path, video_id: str) -> str:
+    supabase = get_supabase_client()
     remote_path = f"{video_id}.mp4"
 
     with open(local_path, "rb") as f:
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             remote_path,
             f,
-            file_options={
-                "content-type": "video/mp4",
-                "upsert": True
-            }
+            file_options={"content-type": "video/mp4", "upsert": True}
         )
 
     return (
@@ -158,45 +157,30 @@ def upload_to_supabase(local_path: Path, video_id: str) -> str:
     )
 
 
-def download_reel_via_rapidapi(raw_url: str) -> dict:
+def fetch_and_download_reel(raw_url: str) -> tuple[str, Path]:
     post_url = normalize_instagram_url(raw_url)
 
-    headers = {
-        "x-rapidapi-key": RAPIDAPI_KEY,
-        "x-rapidapi-host": RAPIDAPI_HOST
-    }
-
-    response = requests.get(
+    r = requests.get(
         f"{RAPIDAPI_BASE_URL}/download",
-        headers=headers,
+        headers={
+            "x-rapidapi-key": RAPIDAPI_KEY,
+            "x-rapidapi-host": RAPIDAPI_HOST
+        },
         params={"url": post_url},
         timeout=30
     )
-    response.raise_for_status()
+    r.raise_for_status()
 
-    data = response.json()
+    data = r.json()
     video_url = extract_video_url(data)
-
     if not video_url:
-        raise RuntimeError(f"No downloadable video found: {data}")
+        raise RuntimeError("No downloadable video found")
 
     video_id = extract_id_from_url(post_url)
     local_path = REELS_DIR / f"{video_id}.mp4"
-
     download_file(video_url, local_path)
 
-    cdn_url = upload_to_supabase(local_path, video_id)
-
-    try:
-        local_path.unlink()
-    except Exception:
-        pass
-
-    return {
-        "status": "ok",
-        "video_id": video_id,
-        "cdn_url": cdn_url
-    }
+    return video_id, local_path
 
 
 # ============================
@@ -208,26 +192,53 @@ def home():
     return {"status": "InstaEye backend running"}
 
 
+# 🔹 CDN MODE (Supabase)
 @app.post("/download-reel")
 def download_reel_api(req: ReelDownloadRequest):
     try:
         url = req.reel_url or req.post_url or req.url
         if not url:
-            return {
-                "status": "error",
-                "stage": "reel_download",
-                "message": "No reel/post URL provided"
-            }
+            return {"status": "error", "message": "No URL provided"}
 
-        return download_reel_via_rapidapi(url)
+        video_id, local_path = fetch_and_download_reel(url)
+        cdn_url = upload_to_supabase(local_path, video_id)
+
+        local_path.unlink(missing_ok=True)
+
+        return {
+            "status": "ok",
+            "video_id": video_id,
+            "cdn_url": cdn_url
+        }
 
     except Exception as e:
         traceback.print_exc()
-        return {
-            "status": "error",
-            "stage": "reel_download",
-            "message": str(e)
-        }
+        return {"status": "error", "message": str(e)}
+
+
+# 🔹 BINARY MODE (n8n file)
+@app.post("/download-reel-file")
+def download_reel_file(
+    req: ReelDownloadRequest,
+    background_tasks: BackgroundTasks
+):
+    try:
+        url = req.reel_url or req.post_url or req.url
+        if not url:
+            return {"status": "error", "message": "No URL provided"}
+
+        video_id, local_path = fetch_and_download_reel(url)
+        background_tasks.add_task(local_path.unlink)
+
+        return FileResponse(
+            path=local_path,
+            media_type="video/mp4",
+            filename=f"{video_id}.mp4"
+        )
+
+    except Exception as e:
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
 
 # ----------------------------
@@ -251,15 +262,7 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
 
 @app.post("/analyze-reel-audio")
 def analyze_reel_audio_api(req: ReelAudioRequest):
-    try:
-        return process_audio(req.media_url)
-    except Exception as e:
-        traceback.print_exc()
-        return {
-            "status": "error",
-            "stage": "audio_pipeline",
-            "message": str(e)
-        }
+    return process_audio(req.media_url)
 
 @app.post("/top-posts")
 def top_posts_api(req: TopPostsRequest):
