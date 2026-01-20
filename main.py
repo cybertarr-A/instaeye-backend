@@ -25,7 +25,7 @@ from reel_resolver import resolve_reel_video_url, ReelResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="3.9.1",
+    version="3.9.2",
     description="Stateless Instagram intelligence backend"
 )
 
@@ -44,13 +44,16 @@ class ContentIdeasRequest(BaseModel):
 class ImageAnalyzeRequest(BaseModel):
     media_url: str
 
+class ReelAnalyzeRequest(BaseModel):
+    url: Optional[str] = None
+    reel_url: Optional[str] = None
+    media_url: Optional[str] = None
+    video_url: Optional[str] = None
+
 class ReelResolveRequest(BaseModel):
     reel_url: Optional[str] = None
     url: Optional[str] = None
     media_url: Optional[str] = None
-
-class ReelResolveRequest(BaseModel):
-    reel_url: str
 
 class ReelAudioRequest(BaseModel):
     media_url: str
@@ -151,7 +154,6 @@ def resolve_reel_api(req: ReelResolveRequest):
             "Unexpected resolver failure",
             traceback.format_exc()
         )
-
 
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
