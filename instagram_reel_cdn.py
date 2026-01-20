@@ -1,54 +1,63 @@
-import sys
-import yt_dlp
-from pathlib import Path
+import os
+import re
+import requests
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, AnyUrl
 
-COOKIE_FILE = Path("cookies.txt")  # optional but recommended
+# ==========================
+# CONFIG
+# ==========================
+IG_OEMBED_TOKEN = os.getenv("IG_OEMBED_TOKEN")
+OEMBED_URL = "https://graph.facebook.com/v18.0/instagram_oembed"
 
-def main():
-    if len(sys.argv) < 2:
-        print("Instagram URL required", file=sys.stderr)
-        sys.exit(1)
+if not IG_OEMBED_TOKEN:
+    raise RuntimeError("IG_OEMBED_TOKEN not set")
 
-    url = sys.argv[1]
+app = FastAPI(title="IG CDN Resolver", version="1.1")
 
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,      # ⬅ IMPORTANT
-        "no_warnings": True,
+# ==========================
+# MODELS
+# ==========================
+class ResolveRequest(BaseModel):
+    post_url: AnyUrl
+
+
+# ==========================
+# HELPERS
+# ==========================
+def extract_cdn(html: str):
+    # handles jpg, png, mp4
+    match = re.search(r'https://[^"]+\.(mp4|jpg|png)', html)
+    return match.group(0) if match else None
+
+
+# ==========================
+# ROUTE
+# ==========================
+@app.post("/resolve")
+def resolve(payload: ResolveRequest):
+    params = {
+        "url": str(payload.post_url),
+        "access_token": IG_OEMBED_TOKEN
     }
 
-    # Use cookies if available
-    if COOKIE_FILE.exists():
-        ydl_opts["cookiefile"] = str(COOKIE_FILE)
-
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        r = requests.get(OEMBED_URL, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
     except Exception as e:
-        print(f"Error extracting info: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise HTTPException(status_code=500, detail="Instagram oEmbed failed")
 
-    cdn_urls = []
+    html = data.get("html")
+    if not html:
+        raise HTTPException(status_code=404, detail="Embed HTML missing")
 
-    # Case 1: Single video
-    if "url" in info:
-        cdn_urls.append(info["url"])
+    cdn_url = extract_cdn(html)
 
-    # Case 2: Multiple formats (common)
-    for f in info.get("formats", []):
-        if f.get("vcodec") != "none" and f.get("url"):
-            cdn_urls.append(f["url"])
-
-    # Deduplicate
-    cdn_urls = list(dict.fromkeys(cdn_urls))
-
-    if not cdn_urls:
-        print("No CDN URLs found", file=sys.stderr)
-        sys.exit(1)
-
-    # Output as JSON-like lines (n8n-friendly)
-    for i, u in enumerate(cdn_urls, 1):
-        print(f"[{i}] {u}")
-
-if __name__ == "__main__":
-    main()
+    return {
+        "status": "ok",
+        "post_url": payload.post_url,
+        "cdn_url": cdn_url,
+        "media_type": data.get("type"),
+        "author": data.get("author_name")
+    }
