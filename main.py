@@ -5,7 +5,7 @@ from urllib.parse import urlparse, urlunparse
 import traceback
 
 # ----------------------------
-# Core modules
+# Core analysis modules
 # ----------------------------
 
 from instagram_analyzer import analyze_profiles
@@ -16,7 +16,12 @@ from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
-from instaloader_worker import download_reel
+
+# ----------------------------
+# CDN Resolver (yt-dlp only)
+# ----------------------------
+
+from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 # ============================
 # APP INIT
@@ -24,8 +29,8 @@ from instaloader_worker import download_reel
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.0.0",
-    description="Stateless Instagram intelligence backend (resolver-free)"
+    version="4.1.0",
+    description="Stateless Instagram intelligence backend (resolver-isolated)"
 )
 
 app.include_router(split_router)
@@ -37,36 +42,43 @@ app.include_router(split_router)
 class AnalyzeProfilesRequest(BaseModel):
     usernames: List[str]
 
+
 class ContentIdeasRequest(BaseModel):
     data: List[Any]
 
+
 class ImageAnalyzeRequest(BaseModel):
     media_url: str
+
 
 class ReelAnalyzeRequest(BaseModel):
     """
     Accepts:
     - direct CDN mp4 URL
-    - local file URL (from instaloader / yt-dlp)
+    - Supabase temporary URL
+    - local file path (internal pipeline)
     """
     video_url: Optional[str] = None
     media_url: Optional[str] = None
     url: Optional[str] = None
 
+
 class ReelAudioRequest(BaseModel):
     media_url: str
+
 
 class TopPostsRequest(BaseModel):
     username: str
     limit: int = 5
 
+
 class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
 
-class ReelDownloadRequest(BaseModel):
-    reel_url: str
 
+class ReelResolveRequest(BaseModel):
+    url: str
 
 # ============================
 # HELPERS
@@ -76,8 +88,10 @@ def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
+
 def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
     return req.video_url or req.media_url or req.url
+
 
 def error_response(message: str, trace: Optional[str] = None):
     payload = {"status": "error", "message": message}
@@ -95,7 +109,7 @@ def home():
         "status": "ok",
         "service": "InstaEye backend",
         "mode": "stateless",
-        "resolver": "disabled",
+        "resolver": "isolated",
         "version": app.version
     }
 
@@ -107,13 +121,16 @@ def home():
 def analyze_profile_api(req: AnalyzeProfilesRequest):
     return analyze_profiles(req.usernames)
 
+
 @app.post("/generate-content-ideas", tags=["content"])
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
 
+
 @app.post("/top-posts", tags=["profiles"])
 def top_posts_api(req: TopPostsRequest):
     return get_top_posts(req.username, req.limit)
+
 
 @app.post("/analyze-industry", tags=["industry"])
 def analyze_industry_api(req: IndustryAnalyzeRequest):
@@ -127,6 +144,7 @@ def analyze_industry_api(req: IndustryAnalyzeRequest):
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
 
+
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
     try:
@@ -136,11 +154,10 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
 
         clean_url = normalize_url(raw_url)
 
-        # IMPORTANT:
-        # At this stage we expect:
+        # Expected input:
         # - CDN mp4 URL
-        # - local file path
-        # - temporary Supabase URL
+        # - Supabase temp URL
+        # - Local file path
         return analyze_reel(clean_url)
 
     except Exception:
@@ -148,15 +165,27 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
             "Reel analysis failed",
             traceback.format_exc()
         )
-        
-@app.post("/download-reel", tags=["media"])
-def download_reel_api(req: ReelDownloadRequest):
-    try:
-        path = download_reel(req.reel_url)
-        return {"status": "ok", "file_path": path}
-    except Exception as e:
-        return error_response(str(e))
+
 
 @app.post("/analyze-reel-audio", tags=["media"])
 def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
+
+# ----------------------------
+# CDN RESOLVER (yt-dlp)
+# ----------------------------
+
+@app.post("/resolve/reel", tags=["resolver"])
+def resolve_reel_api(req: ReelResolveRequest):
+    try:
+        clean_url = normalize_url(req.url)
+        return resolve_instagram_cdn(clean_url)
+
+    except CDNResolveError as e:
+        return error_response("CDN resolution failed", str(e))
+
+    except Exception:
+        return error_response(
+            "Unexpected resolver error",
+            traceback.format_exc()
+        )
