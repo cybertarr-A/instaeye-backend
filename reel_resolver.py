@@ -15,39 +15,60 @@ class ReelResolveError(Exception):
     pass
 
 
-def resolve_reel_video_url(reel_url: str) -> str:
+def _extract_shortcode(insta_url: str) -> str:
     """
-    Instagram Reel URL → direct MP4 CDN URL
+    Extract shortcode from /p/ or /reel/ URL
+    """
+    match = re.search(r"/(p|reel)/([^/]+)/?", insta_url)
+    if not match:
+        raise ReelResolveError("Invalid Instagram URL")
+    return match.group(2)
+
+
+def resolve_reel_video_url(insta_url: str) -> str:
+    """
+    Instagram URL → Direct MP4 URL
     """
 
-    response = requests.get(
-        reel_url,
-        headers=HEADERS,
-        timeout=15,
-        allow_redirects=True
-    )
-
-    if response.status_code != 200:
+    # -----------------------------------
+    # 1️⃣ Try HTML (fast path)
+    # -----------------------------------
+    r = requests.get(insta_url, headers=HEADERS, timeout=15)
+    if r.status_code != 200:
         raise ReelResolveError("Failed to fetch Instagram page")
 
-    html = response.text
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(r.text, "html.parser")
 
-    # 1. application/ld+json
+    # ld+json
     for script in soup.find_all("script", type="application/ld+json"):
         if "contentUrl" in script.text:
             match = re.search(r'"contentUrl"\s*:\s*"([^"]+)"', script.text)
             if match:
                 return match.group(1).replace("\\u0026", "&")
 
-    # 2. og:video
+    # og:video
     meta = soup.find("meta", property="og:video")
     if meta and meta.get("content"):
         return meta["content"]
 
-    # 3. regex fallback
-    match = re.search(r'"video_url"\s*:\s*"([^"]+)"', html)
-    if match:
-        return match.group(1).replace("\\u0026", "&")
+    # -----------------------------------
+    # 2️⃣ JSON fallback (SnapInsta method)
+    # -----------------------------------
+    shortcode = _extract_shortcode(insta_url)
+
+    json_url = f"https://www.instagram.com/p/{shortcode}/?__a=1&__d=dis"
+    jr = requests.get(json_url, headers=HEADERS, timeout=15)
+
+    if jr.status_code != 200:
+        raise ReelResolveError("Instagram JSON endpoint blocked")
+
+    data = jr.json()
+
+    try:
+        media = data["graphql"]["shortcode_media"]
+        if media.get("is_video") and "video_url" in media:
+            return media["video_url"]
+    except Exception:
+        pass
 
     raise ReelResolveError("Video URL not found")
