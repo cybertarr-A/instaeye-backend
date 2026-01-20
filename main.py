@@ -23,7 +23,12 @@ from reel_resolver import resolve_reel_video_url, ReelResolveError
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="3.9.0")
+app = FastAPI(
+    title="InstaEye Backend",
+    version="3.9.1",
+    description="Stateless Instagram intelligence backend"
+)
+
 app.include_router(split_router)
 
 # ============================
@@ -64,20 +69,33 @@ class IndustryAnalyzeRequest(BaseModel):
 # ============================
 
 def normalize_instagram_url(url: str) -> str:
+    """
+    Strip query params, fragments, and trailing slashes.
+    """
     parsed = urlparse(url.strip())
-    return urlunparse(parsed._replace(query="", fragment=""))
+    return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
 def extract_any_reel_url(req: ReelAnalyzeRequest) -> Optional[str]:
+    """
+    Accept multiple field names for n8n / external flexibility.
+    """
     return req.video_url or req.media_url or req.url or req.reel_url
+
+def error_response(message: str, trace: Optional[str] = None):
+    payload = {"status": "error", "message": message}
+    if trace:
+        payload["trace"] = trace
+    return payload
 
 # ============================
 # ROUTES
 # ============================
 
-@app.get("/")
+@app.get("/", tags=["system"])
 def home():
     return {
-        "status": "InstaEye backend running",
+        "status": "ok",
+        "service": "InstaEye backend",
         "mode": "stateless",
         "storage": "none",
         "version": app.version
@@ -87,19 +105,19 @@ def home():
 # Profile & Content Analysis
 # ----------------------------
 
-@app.post("/analyze")
+@app.post("/analyze", tags=["profiles"])
 def analyze_profile_api(req: AnalyzeProfilesRequest):
     return analyze_profiles(req.usernames)
 
-@app.post("/generate-content-ideas")
+@app.post("/generate-content-ideas", tags=["content"])
 def generate_ideas_api(req: ContentIdeasRequest):
     return generate_content(req.data)
 
-@app.post("/top-posts")
+@app.post("/top-posts", tags=["profiles"])
 def top_posts_api(req: TopPostsRequest):
     return get_top_posts(req.username, req.limit)
 
-@app.post("/analyze-industry")
+@app.post("/analyze-industry", tags=["industry"])
 def analyze_industry_api(req: IndustryAnalyzeRequest):
     return analyze_industry(req.keywords, req.news_api_key)
 
@@ -107,15 +125,14 @@ def analyze_industry_api(req: IndustryAnalyzeRequest):
 # Media Analysis
 # ----------------------------
 
-@app.post("/analyze-image")
+@app.post("/analyze-image", tags=["media"])
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
 
-@app.post("/resolve-reel")
+@app.post("/resolve-reel", tags=["media"])
 def resolve_reel_api(req: ReelResolveRequest):
     """
-    SnapInsta-style resolver:
-    Instagram Reel URL → Direct MP4 URL
+    Instagram Reel URL → Direct MP4 CDN URL
     """
     try:
         clean_url = normalize_instagram_url(req.reel_url)
@@ -127,38 +144,40 @@ def resolve_reel_api(req: ReelResolveRequest):
         }
 
     except ReelResolveError as e:
-        return {"status": "error", "message": str(e)}
+        return error_response(str(e))
 
     except Exception:
-        return {
-            "status": "error",
-            "message": "Unexpected resolver failure",
-            "trace": traceback.format_exc()
-        }
+        return error_response(
+            "Unexpected resolver failure",
+            traceback.format_exc()
+        )
 
-@app.post("/analyze-reel")
+@app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
     try:
         raw_url = extract_any_reel_url(req)
         if not raw_url:
-            return {"status": "error", "message": "No reel URL provided"}
+            return error_response("No reel URL provided")
 
         clean_url = normalize_instagram_url(raw_url)
 
-        # If Instagram URL → resolve first
+        # Instagram URL → resolve first
         if "instagram.com" in clean_url:
             video_url = resolve_reel_video_url(clean_url)
         else:
-            video_url = clean_url  # already direct CDN URL
+            video_url = clean_url  # already CDN URL
 
         return analyze_reel(video_url)
 
-    except Exception:
-        return {
-            "status": "error",
-            "trace": traceback.format_exc()
-        }
+    except ReelResolveError as e:
+        return error_response(str(e))
 
-@app.post("/analyze-reel-audio")
+    except Exception:
+        return error_response(
+            "Unexpected reel analysis failure",
+            traceback.format_exc()
+        )
+
+@app.post("/analyze-reel-audio", tags=["media"])
 def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
