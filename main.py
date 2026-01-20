@@ -6,7 +6,6 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import subprocess
 import traceback
-import os
 
 # ----------------------------
 # Core modules (unchanged)
@@ -25,11 +24,16 @@ from media_splitter import router as split_router
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="3.0.0")
+app = FastAPI(title="InstaEye Backend", version="3.1.0")
 app.include_router(split_router)
 
 TMP_DIR = Path("tmp/reels")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+COOKIE_FILE = Path("cookies.txt")
+
+if not COOKIE_FILE.exists():
+    raise RuntimeError("cookies.txt not found. Export Instagram cookies first.")
 
 # ============================
 # REQUEST MODELS
@@ -84,6 +88,7 @@ def extract_id_from_url(url: str) -> str:
 def download_with_ytdlp(insta_url: str, output_path: Path):
     cmd = [
         "yt-dlp",
+        "--cookies", str(COOKIE_FILE),
         "--no-playlist",
         "-f", "bv*+ba/b",
         "-o", str(output_path),
@@ -108,7 +113,7 @@ def download_with_ytdlp(insta_url: str, output_path: Path):
 def home():
     return {"status": "InstaEye backend running"}
 
-# 🔥 DIRECT BINARY DOWNLOAD (n8n)
+# 🔥 Binary MP4 for n8n
 @app.post("/download-reel-file")
 def download_reel_file(
     req: ReelDownloadRequest,
@@ -124,7 +129,6 @@ def download_reel_file(
         output_path = TMP_DIR / f"{video_id}.mp4"
 
         download_with_ytdlp(clean_url, output_path)
-
         background_tasks.add_task(output_path.unlink)
 
         return FileResponse(
@@ -138,7 +142,7 @@ def download_reel_file(
         return {"status": "error", "message": str(e)}
 
 # ----------------------------
-# Existing analysis routes (unchanged)
+# Existing routes (unchanged)
 # ----------------------------
 
 @app.post("/analyze")
