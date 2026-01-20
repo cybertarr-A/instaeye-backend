@@ -44,11 +44,10 @@ class ContentIdeasRequest(BaseModel):
 class ImageAnalyzeRequest(BaseModel):
     media_url: str
 
-class ReelAnalyzeRequest(BaseModel):
-    url: Optional[str] = None
+class ReelResolveRequest(BaseModel):
     reel_url: Optional[str] = None
+    url: Optional[str] = None
     media_url: Optional[str] = None
-    video_url: Optional[str] = None
 
 class ReelResolveRequest(BaseModel):
     reel_url: str
@@ -131,11 +130,12 @@ def analyze_image_api(req: ImageAnalyzeRequest):
 
 @app.post("/resolve-reel", tags=["media"])
 def resolve_reel_api(req: ReelResolveRequest):
-    """
-    Instagram Reel URL → Direct MP4 CDN URL
-    """
     try:
-        clean_url = normalize_instagram_url(req.reel_url)
+        raw_url = req.reel_url or req.url or req.media_url
+        if not raw_url:
+            return error_response("No reel URL provided")
+
+        clean_url = normalize_instagram_url(raw_url)
         video_url = resolve_reel_video_url(clean_url)
 
         return {
@@ -151,6 +151,7 @@ def resolve_reel_api(req: ReelResolveRequest):
             "Unexpected resolver failure",
             traceback.format_exc()
         )
+
 
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
