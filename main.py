@@ -18,6 +18,7 @@ from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
 from reel_resolver import resolve_reel_video_url, ReelResolveError
+from instaloader_worker import download_reel
 
 # ============================
 # APP INIT
@@ -25,7 +26,7 @@ from reel_resolver import resolve_reel_video_url, ReelResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="3.9.2",
+    version="4.0.0",
     description="Stateless Instagram intelligence backend"
 )
 
@@ -55,6 +56,9 @@ class ReelResolveRequest(BaseModel):
     url: Optional[str] = None
     media_url: Optional[str] = None
 
+class ReelDownloadRequest(BaseModel):
+    reel_url: str
+
 class ReelAudioRequest(BaseModel):
     media_url: str
 
@@ -71,16 +75,10 @@ class IndustryAnalyzeRequest(BaseModel):
 # ============================
 
 def normalize_instagram_url(url: str) -> str:
-    """
-    Strip query params, fragments, and trailing slashes.
-    """
     parsed = urlparse(url.strip())
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
 def extract_any_reel_url(req: ReelAnalyzeRequest) -> Optional[str]:
-    """
-    Accept multiple field names for n8n / external flexibility.
-    """
     return req.video_url or req.media_url or req.url or req.reel_url
 
 def error_response(message: str, trace: Optional[str] = None):
@@ -155,6 +153,20 @@ def resolve_reel_api(req: ReelResolveRequest):
             traceback.format_exc()
         )
 
+@app.post("/download-reel", tags=["media"])
+def download_reel_api(req: ReelDownloadRequest):
+    try:
+        clean_url = normalize_instagram_url(req.reel_url)
+        file_path = download_reel(clean_url)
+
+        return {
+            "status": "ok",
+            "file_path": file_path
+        }
+
+    except Exception as e:
+        return error_response(str(e))
+
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
     try:
@@ -168,7 +180,7 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
         if "instagram.com" in clean_url:
             video_url = resolve_reel_video_url(clean_url)
         else:
-            video_url = clean_url  # already CDN URL
+            video_url = clean_url
 
         return analyze_reel(video_url)
 
