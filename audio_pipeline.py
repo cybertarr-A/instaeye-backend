@@ -55,10 +55,11 @@ def download_audio(audio_url: str) -> str:
 def detect_song_from_audio_file(audio_path: str) -> dict:
     with open(audio_path, "rb") as f:
         files = {
-            "file": (
-                "audio.wav",     # REQUIRED filename
+            # 🔑 REQUIRED by shazam-api6 (this fixes 422)
+            "upload_file": (
+                "audio.wav",
                 f,
-                "audio/wav"      # REQUIRED content-type
+                "audio/wav"
             )
         }
 
@@ -79,7 +80,10 @@ def detect_song_from_audio_file(audio_path: str) -> dict:
     try:
         data = r.json()
     except Exception:
-        return {"status": "error", "message": "Invalid Shazam response"}
+        return {
+            "status": "error",
+            "message": "Invalid JSON from Shazam"
+        }
 
     track = data.get("track") or data.get("result")
 
@@ -92,7 +96,6 @@ def detect_song_from_audio_file(audio_path: str) -> dict:
         "artist": track.get("subtitle") or track.get("artist"),
         "shazam_url": track.get("url")
     }
-
 
 # -----------------------------
 # OPENAI TRANSCRIPTION
@@ -136,5 +139,4 @@ def process_audio(audio_cdn_url: str) -> dict:
 # -----------------------------
 
 # ⚠️ DO NOT REMOVE
-# This prevents server crashes if older code imports process_reel
 process_reel = process_audio
