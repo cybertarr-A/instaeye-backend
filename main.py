@@ -16,6 +16,7 @@ from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
+from instaloader_worker import download_reel
 
 # ============================
 # APP INIT
@@ -62,6 +63,10 @@ class TopPostsRequest(BaseModel):
 class IndustryAnalyzeRequest(BaseModel):
     keywords: List[str]
     news_api_key: Optional[str] = None
+
+class ReelDownloadRequest(BaseModel):
+    reel_url: str
+
 
 # ============================
 # HELPERS
@@ -143,6 +148,14 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
             "Reel analysis failed",
             traceback.format_exc()
         )
+        
+@app.post("/download-reel", tags=["media"])
+def download_reel_api(req: ReelDownloadRequest):
+    try:
+        path = download_reel(req.reel_url)
+        return {"status": "ok", "file_path": path}
+    except Exception as e:
+        return error_response(str(e))
 
 @app.post("/analyze-reel-audio", tags=["media"])
 def analyze_reel_audio_api(req: ReelAudioRequest):
