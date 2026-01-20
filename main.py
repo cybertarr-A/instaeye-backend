@@ -1,6 +1,6 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, AnyUrl
+from pydantic import BaseModel
 from typing import Optional, List, Any
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -8,8 +8,7 @@ import subprocess
 import traceback
 import yt_dlp
 import os
-import re
-import requests
+import requests  # Required for sending to n8n
 
 # ----------------------------
 # Core modules (unchanged)
@@ -28,19 +27,15 @@ from media_splitter import router as split_router
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="3.4.0")
+app = FastAPI(title="InstaEye Backend", version="3.5.0")
 app.include_router(split_router)
+
+# N8N Webhook URL from Environment Variables (Set this in Railway)
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL")
 
 COOKIE_FILE = Path("cookies.txt")
 TMP_DIR = Path("tmp/reels")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
-
-# ============================
-# OEMBED CONFIG (NEW)
-# ============================
-
-IG_OEMBED_TOKEN = os.getenv("IG_OEMBED_TOKEN")
-OEMBED_URL = "https://graph.facebook.com/v18.0/instagram_oembed"
 
 # ============================
 # REQUEST MODELS
@@ -92,64 +87,45 @@ def extract_id_from_url(url: str) -> str:
             return parts[i + 1]
     return parts[-1]
 
-# -------- OEMBED CDN (NEW) --------
-
-def extract_cdn_from_oembed(insta_url: str) -> Optional[str]:
-    if not IG_OEMBED_TOKEN:
-        return None
-
-    params = {
-        "url": insta_url,
-        "access_token": IG_OEMBED_TOKEN
-    }
-
-    r = requests.get(OEMBED_URL, params=params, timeout=10)
-    r.raise_for_status()
-    data = r.json()
-
-    html = data.get("html", "")
-    match = re.search(r'https://[^"]+\.(mp4|jpg|png)', html)
-    return match.group(0) if match else None
-
-# -------- yt-dlp fallback --------
-
-def extract_cdn_urls(insta_url: str) -> list[str]:
-    if not COOKIE_FILE.exists():
-        return []
-
+def get_instagram_cdn_info(post_url: str):
+    """
+    Extracts the direct video/CDN URL, title, and author using yt-dlp.
+    """
     ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "no_warnings": True,
-        "cookiefile": str(COOKIE_FILE),
-        "extract_flat": False,
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+        # 'cookies': str(COOKIE_FILE) if COOKIE_FILE.exists() else None # Optional: Use cookies if available
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(insta_url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(post_url, download=False)
+            
+            video_url = info.get('url')
+            
+            # Fallback: sometimes the URL is hidden in formats
+            if not video_url:
+                for f in info.get('formats', []):
+                    if f.get('ext') == 'mp4':
+                        video_url = f.get('url')
+                        break
+            
+            return {
+                "cdn_url": video_url,
+                "caption": info.get('title'),
+                "author": info.get('uploader'),
+                "video_id": info.get('id')
+            }
 
-    urls = set()
-
-    for f in info.get("formats", []):
-        if f.get("vcodec") != "none" and f.get("url"):
-            urls.add(f["url"])
-
-    if info.get("url"):
-        urls.add(info["url"])
-
-    for v in info.get("video_versions", []) or []:
-        if isinstance(v, dict) and v.get("url"):
-            urls.add(v["url"])
-
-    if info.get("dash_manifest_url"):
-        urls.add(info["dash_manifest_url"])
-
-    return list(urls)
+    except Exception as e:
+        print(f"Error extracting video: {e}")
+        return None
 
 def download_with_ytdlp(insta_url: str, output_path: Path):
     cmd = [
         "yt-dlp",
-        "--cookies", str(COOKIE_FILE),
+        # "--cookies", str(COOKIE_FILE), # Uncomment if you use cookies
         "--no-playlist",
         "-f", "bv*+ba/b",
         "-o", str(output_path),
@@ -174,7 +150,7 @@ def download_with_ytdlp(insta_url: str, output_path: Path):
 def home():
     return {"status": "InstaEye backend running"}
 
-# 🔹 UPDATED CDN RESOLVER
+# 🔹 UPDATED CDN RESOLVER + N8N TRIGGER
 @app.post("/get-reel-cdn")
 def get_reel_cdn(req: ReelRequest):
     try:
@@ -183,35 +159,40 @@ def get_reel_cdn(req: ReelRequest):
             return {"status": "error", "message": "No URL provided"}
 
         clean_url = normalize_instagram_url(raw_url)
-        video_id = extract_id_from_url(clean_url)
+        
+        # 1. Extract Info using yt-dlp
+        data = get_instagram_cdn_info(clean_url)
+        
+        if not data or not data.get("cdn_url"):
+            return {"status": "error", "message": "Could not extract video URL"}
 
-        # 1️⃣ Official oEmbed (preferred)
-        cdn = extract_cdn_from_oembed(clean_url)
-        if cdn:
-            return {
-                "status": "ok",
-                "source": "oembed",
-                "video_id": video_id,
-                "cdn_url": cdn
+        # 2. Send to n8n (if URL is configured)
+        n8n_status = "skipped"
+        if N8N_WEBHOOK_URL:
+            payload = {
+                "video_url": data["cdn_url"],
+                "caption": data["caption"],
+                "author": data["author"],
+                "source": "instaeye_backend"
             }
+            try:
+                requests.post(N8N_WEBHOOK_URL, json=payload, timeout=5)
+                n8n_status = "sent"
+            except Exception as e:
+                print(f"Failed to send to n8n: {e}")
+                n8n_status = "failed"
 
-        # 2️⃣ yt-dlp fallback
-        cdn_urls = extract_cdn_urls(clean_url)
-        if cdn_urls:
-            return {
-                "status": "ok",
-                "source": "yt-dlp",
-                "video_id": video_id,
-                "cdn_urls": cdn_urls
-            }
-
-        return {"status": "error", "message": "No CDN URLs found"}
+        return {
+            "status": "ok",
+            "n8n_status": n8n_status,
+            "data": data
+        }
 
     except Exception as e:
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-# 🔹 Binary MP4 download (unchanged)
+# 🔹 Binary MP4 download
 @app.post("/download-reel-file")
 def download_reel_file(req: ReelRequest, background_tasks: BackgroundTasks):
     try:
@@ -223,7 +204,10 @@ def download_reel_file(req: ReelRequest, background_tasks: BackgroundTasks):
         video_id = extract_id_from_url(clean_url)
         output_path = TMP_DIR / f"{video_id}.mp4"
 
+        # Download locally
         download_with_ytdlp(clean_url, output_path)
+        
+        # Schedule cleanup after response
         background_tasks.add_task(output_path.unlink)
 
         return FileResponse(
