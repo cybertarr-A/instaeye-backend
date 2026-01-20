@@ -25,7 +25,7 @@ from media_splitter import router as split_router
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="3.2.0")
+app = FastAPI(title="InstaEye Backend", version="3.3.0")
 app.include_router(split_router)
 
 COOKIE_FILE = Path("cookies.txt")
@@ -91,6 +91,7 @@ def extract_cdn_urls(insta_url: str) -> list[str]:
         "skip_download": True,
         "no_warnings": True,
         "cookiefile": str(COOKIE_FILE),
+        "extract_flat": False,
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -98,14 +99,26 @@ def extract_cdn_urls(insta_url: str) -> list[str]:
 
     urls = set()
 
-    # Single URL
-    if isinstance(info, dict) and info.get("url"):
-        urls.add(info["url"])
-
-    # Formats
+    # 1️⃣ yt-dlp formats
     for f in info.get("formats", []):
         if f.get("vcodec") != "none" and f.get("url"):
             urls.add(f["url"])
+
+    # 2️⃣ direct URL
+    if info.get("url"):
+        urls.add(info["url"])
+
+    # 3️⃣ Instagram video_versions (most modern reels)
+    video_versions = info.get("video_versions")
+    if isinstance(video_versions, list):
+        for v in video_versions:
+            if isinstance(v, dict) and v.get("url"):
+                urls.add(v["url"])
+
+    # 4️⃣ DASH manifest (adaptive streams)
+    dash = info.get("dash_manifest_url")
+    if dash:
+        urls.add(dash)
 
     return list(urls)
 
@@ -150,10 +163,7 @@ def get_reel_cdn(req: ReelRequest):
         cdn_urls = extract_cdn_urls(clean_url)
 
         if not cdn_urls:
-            return {
-                "status": "error",
-                "message": "No CDN URLs found"
-            }
+            return {"status": "error", "message": "No CDN URLs found"}
 
         return {
             "status": "ok",
@@ -165,7 +175,7 @@ def get_reel_cdn(req: ReelRequest):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-# 🔹 Binary MP4 (unchanged, optional)
+# 🔹 Binary MP4 download (optional, for n8n)
 @app.post("/download-reel-file")
 def download_reel_file(req: ReelRequest, background_tasks: BackgroundTasks):
     try:
