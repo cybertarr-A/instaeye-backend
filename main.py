@@ -17,9 +17,6 @@ from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
-from reel_resolver import resolve_reel_video_url, ReelResolveError
-from instaloader_worker import download_reel
-
 # ============================
 # APP INIT
 # ============================
@@ -27,7 +24,7 @@ from instaloader_worker import download_reel
 app = FastAPI(
     title="InstaEye Backend",
     version="4.0.0",
-    description="Stateless Instagram intelligence backend"
+    description="Stateless Instagram intelligence backend (resolver-free)"
 )
 
 app.include_router(split_router)
@@ -46,18 +43,14 @@ class ImageAnalyzeRequest(BaseModel):
     media_url: str
 
 class ReelAnalyzeRequest(BaseModel):
-    url: Optional[str] = None
-    reel_url: Optional[str] = None
-    media_url: Optional[str] = None
+    """
+    Accepts:
+    - direct CDN mp4 URL
+    - local file URL (from instaloader / yt-dlp)
+    """
     video_url: Optional[str] = None
-
-class ReelResolveRequest(BaseModel):
-    reel_url: Optional[str] = None
-    url: Optional[str] = None
     media_url: Optional[str] = None
-
-class ReelDownloadRequest(BaseModel):
-    reel_url: str
+    url: Optional[str] = None
 
 class ReelAudioRequest(BaseModel):
     media_url: str
@@ -74,12 +67,12 @@ class IndustryAnalyzeRequest(BaseModel):
 # HELPERS
 # ============================
 
-def normalize_instagram_url(url: str) -> str:
+def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
-def extract_any_reel_url(req: ReelAnalyzeRequest) -> Optional[str]:
-    return req.video_url or req.media_url or req.url or req.reel_url
+def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
+    return req.video_url or req.media_url or req.url
 
 def error_response(message: str, trace: Optional[str] = None):
     payload = {"status": "error", "message": message}
@@ -97,7 +90,7 @@ def home():
         "status": "ok",
         "service": "InstaEye backend",
         "mode": "stateless",
-        "storage": "none",
+        "resolver": "disabled",
         "version": app.version
     }
 
@@ -129,67 +122,25 @@ def analyze_industry_api(req: IndustryAnalyzeRequest):
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
 
-@app.post("/resolve-reel", tags=["media"])
-def resolve_reel_api(req: ReelResolveRequest):
-    try:
-        raw_url = req.reel_url or req.url or req.media_url
-        if not raw_url:
-            return error_response("No reel URL provided")
-
-        clean_url = normalize_instagram_url(raw_url)
-        video_url = resolve_reel_video_url(clean_url)
-
-        return {
-            "status": "ok",
-            "video_url": video_url
-        }
-
-    except ReelResolveError as e:
-        return error_response(str(e))
-
-    except Exception:
-        return error_response(
-            "Unexpected resolver failure",
-            traceback.format_exc()
-        )
-
-@app.post("/download-reel", tags=["media"])
-def download_reel_api(req: ReelDownloadRequest):
-    try:
-        clean_url = normalize_instagram_url(req.reel_url)
-        file_path = download_reel(clean_url)
-
-        return {
-            "status": "ok",
-            "file_path": file_path
-        }
-
-    except Exception as e:
-        return error_response(str(e))
-
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
     try:
-        raw_url = extract_any_reel_url(req)
+        raw_url = extract_any_url(req)
         if not raw_url:
-            return error_response("No reel URL provided")
+            return error_response("No video URL provided")
 
-        clean_url = normalize_instagram_url(raw_url)
+        clean_url = normalize_url(raw_url)
 
-        # Instagram URL → resolve first
-        if "instagram.com" in clean_url:
-            video_url = resolve_reel_video_url(clean_url)
-        else:
-            video_url = clean_url
-
-        return analyze_reel(video_url)
-
-    except ReelResolveError as e:
-        return error_response(str(e))
+        # IMPORTANT:
+        # At this stage we expect:
+        # - CDN mp4 URL
+        # - local file path
+        # - temporary Supabase URL
+        return analyze_reel(clean_url)
 
     except Exception:
         return error_response(
-            "Unexpected reel analysis failure",
+            "Reel analysis failed",
             traceback.format_exc()
         )
 
