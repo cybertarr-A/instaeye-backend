@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse, urlunparse
 import subprocess
 import traceback
+import yt_dlp
 
 # ----------------------------
 # Core modules (unchanged)
@@ -24,22 +25,21 @@ from media_splitter import router as split_router
 # APP INIT
 # ============================
 
-app = FastAPI(title="InstaEye Backend", version="3.1.0")
+app = FastAPI(title="InstaEye Backend", version="3.2.0")
 app.include_router(split_router)
+
+COOKIE_FILE = Path("cookies.txt")
+if not COOKIE_FILE.exists():
+    raise RuntimeError("cookies.txt not found. Export Instagram cookies first.")
 
 TMP_DIR = Path("tmp/reels")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
-
-COOKIE_FILE = Path("cookies.txt")
-
-if not COOKIE_FILE.exists():
-    raise RuntimeError("cookies.txt not found. Export Instagram cookies first.")
 
 # ============================
 # REQUEST MODELS
 # ============================
 
-class ReelDownloadRequest(BaseModel):
+class ReelRequest(BaseModel):
     url: Optional[str] = None
     reel_url: Optional[str] = None
     post_url: Optional[str] = None
@@ -85,6 +85,30 @@ def extract_id_from_url(url: str) -> str:
             return parts[i + 1]
     return parts[-1]
 
+def extract_cdn_urls(insta_url: str) -> list[str]:
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "no_warnings": True,
+        "cookiefile": str(COOKIE_FILE),
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(insta_url, download=False)
+
+    urls = set()
+
+    # Single URL
+    if isinstance(info, dict) and info.get("url"):
+        urls.add(info["url"])
+
+    # Formats
+    for f in info.get("formats", []):
+        if f.get("vcodec") != "none" and f.get("url"):
+            urls.add(f["url"])
+
+    return list(urls)
+
 def download_with_ytdlp(insta_url: str, output_path: Path):
     cmd = [
         "yt-dlp",
@@ -113,12 +137,37 @@ def download_with_ytdlp(insta_url: str, output_path: Path):
 def home():
     return {"status": "InstaEye backend running"}
 
-# 🔥 Binary MP4 for n8n
+# 🔹 CDN URL EXTRACTION
+@app.post("/get-reel-cdn")
+def get_reel_cdn(req: ReelRequest):
+    try:
+        raw_url = req.url or req.reel_url or req.post_url
+        if not raw_url:
+            return {"status": "error", "message": "No URL provided"}
+
+        clean_url = normalize_instagram_url(raw_url)
+        video_id = extract_id_from_url(clean_url)
+        cdn_urls = extract_cdn_urls(clean_url)
+
+        if not cdn_urls:
+            return {
+                "status": "error",
+                "message": "No CDN URLs found"
+            }
+
+        return {
+            "status": "ok",
+            "video_id": video_id,
+            "cdn_urls": cdn_urls
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
+# 🔹 Binary MP4 (unchanged, optional)
 @app.post("/download-reel-file")
-def download_reel_file(
-    req: ReelDownloadRequest,
-    background_tasks: BackgroundTasks
-):
+def download_reel_file(req: ReelRequest, background_tasks: BackgroundTasks):
     try:
         raw_url = req.url or req.reel_url or req.post_url
         if not raw_url:
