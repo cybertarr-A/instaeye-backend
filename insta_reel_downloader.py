@@ -1,5 +1,12 @@
 import sys
-import subprocess
+import yt_dlp
+from pathlib import Path
+
+COOKIE_FILE = Path("cookies.txt")
+
+if not COOKIE_FILE.exists():
+    print("cookies.txt not found", file=sys.stderr)
+    sys.exit(1)
 
 def main():
     if len(sys.argv) < 2:
@@ -8,31 +15,20 @@ def main():
 
     url = sys.argv[1]
 
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "-f", "bv*+ba/b",
-        "-o", "-",          # stream to stdout
-        url
-    ]
-
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
+    ydl_opts = {
+        "format": "bv*+ba/b",
+        "merge_output_format": "mp4",
+        "outtmpl": "-",              # stream to stdout (n8n)
+        "cookiefile": str(COOKIE_FILE),
+        "quiet": True,
+        "no_warnings": True,
+    }
 
     try:
-        for chunk in iter(lambda: process.stdout.read(8192), b""):
-            sys.stdout.buffer.write(chunk)
-    except BrokenPipeError:
-        pass
-
-    process.wait()
-
-    if process.returncode != 0:
-        err = process.stderr.read().decode(errors="ignore")
-        print(err, file=sys.stderr)
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+    except Exception as e:
+        print(str(e), file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":
