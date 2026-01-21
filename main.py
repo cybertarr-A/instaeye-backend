@@ -11,7 +11,7 @@ import traceback
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
-from video_analyzer import analyze_reel
+from mini_video_analyzer import analyze_reel   # ✅ UPDATED IMPORT
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
@@ -29,7 +29,7 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.1.0",
+    version="4.1.1",
     description="Stateless Instagram intelligence backend (resolver-isolated)"
 )
 
@@ -63,6 +63,15 @@ class ReelAnalyzeRequest(BaseModel):
     url: Optional[str] = None
 
 
+class ReelVisionAnalyzeRequest(BaseModel):
+    """
+    Explicit vision-only reel analysis (mini analyzer)
+    """
+    video_url: Optional[str] = None
+    media_url: Optional[str] = None
+    url: Optional[str] = None
+
+
 class ReelAudioRequest(BaseModel):
     media_url: str
 
@@ -89,7 +98,7 @@ def normalize_url(url: str) -> str:
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
 
-def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
+def extract_any_url(req) -> Optional[str]:
     return req.video_url or req.media_url or req.url
 
 
@@ -147,22 +156,42 @@ def analyze_image_api(req: ImageAnalyzeRequest):
 
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
+    """
+    Generic reel analysis entry.
+    Can accept CDN, Supabase temp URL, or internal file path.
+    """
     try:
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No video URL provided")
 
         clean_url = normalize_url(raw_url)
-
-        # Expected input:
-        # - CDN mp4 URL
-        # - Supabase temp URL
-        # - Local file path
         return analyze_reel(clean_url)
 
     except Exception:
         return error_response(
             "Reel analysis failed",
+            traceback.format_exc()
+        )
+
+
+@app.post("/analyze/reel/vision", tags=["media"])
+def analyze_reel_vision_api(req: ReelVisionAnalyzeRequest):
+    """
+    Vision-only, 3-prompt lightweight reel analyzer
+    (mini_video_analyzer)
+    """
+    try:
+        raw_url = extract_any_url(req)
+        if not raw_url:
+            return error_response("No reel URL provided")
+
+        clean_url = normalize_url(raw_url)
+        return analyze_reel(clean_url)
+
+    except Exception:
+        return error_response(
+            "Vision reel analysis failed",
             traceback.format_exc()
         )
 
