@@ -2,12 +2,13 @@ import os
 import re
 import requests
 from typing import List, Dict, Set, Optional
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 # ============================
-# ROUTER (THIS IS WHAT main.py IMPORTS)
+# ROUTER
 # ============================
 
 router = APIRouter(
@@ -34,6 +35,23 @@ HEADERS = {
 FOLLOWER_REGEX = re.compile(
     r'"edge_followed_by"\s*:\s*\{"count"\s*:\s*(\d+)'
 )
+
+USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9._]{1,30}$")
+
+EXCLUDED_PATHS = {
+    "p",
+    "reel",
+    "tv",
+    "stories",
+    "explore",
+    "accounts",
+    "direct",
+    "about",
+    "developer",
+    "privacy",
+    "terms",
+    "blog"
+}
 
 # ============================
 # MODELS
@@ -70,6 +88,37 @@ def serpapi_search(query: str, page: int, num: int) -> Dict:
     )
     r.raise_for_status()
     return r.json()
+
+
+def extract_valid_instagram_username(link: str) -> Optional[str]:
+    """
+    Extract ONLY real Instagram profile usernames.
+    Reject posts, reels, stories, explore pages, etc.
+    """
+    try:
+        parsed = urlparse(link)
+
+        if "instagram.com" not in parsed.netloc:
+            return None
+
+        parts = [p for p in parsed.path.split("/") if p]
+
+        # Must be exactly /username
+        if len(parts) != 1:
+            return None
+
+        username = parts[0]
+
+        if username.lower() in EXCLUDED_PATHS:
+            return None
+
+        if not USERNAME_REGEX.match(username):
+            return None
+
+        return username
+
+    except Exception:
+        return None
 
 
 def fetch_followers(username: str) -> Optional[int]:
@@ -109,10 +158,11 @@ def discover(req: InstagramFinderRequest):
 
     for item in data.get("organic_results", []):
         link = item.get("link", "")
-        if "instagram.com/" not in link:
+        username = extract_valid_instagram_username(link)
+
+        if not username:
             continue
 
-        username = link.rstrip("/").split("/")[-1]
         if username in seen:
             continue
 
