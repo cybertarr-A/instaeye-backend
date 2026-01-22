@@ -117,15 +117,14 @@ def extract_valid_instagram_username(link: str) -> Optional[str]:
 
 def fetch_followers_rapidapi(username: str) -> Optional[int]:
     """
-    Provider-agnostic RapidAPI follower extractor.
-    Works with most Instagram stats APIs.
+    Extract followers from the current RapidAPI provider.
+    Uses `data.usersCount` as confirmed.
     """
 
     if not RAPIDAPI_KEY or not RAPIDAPI_HOST:
         return None
 
     try:
-        # Most common endpoint used by Instagram stats providers
         url = f"https://{RAPIDAPI_HOST}/statistics"
 
         headers = {
@@ -139,38 +138,17 @@ def fetch_followers_rapidapi(username: str) -> Optional[int]:
             url,
             headers=headers,
             params=params,
-            timeout=15
+            timeout=20
         )
         r.raise_for_status()
 
-        data = r.json()
+        payload = r.json()
 
-        # Try all known follower locations defensively
-        paths = [
-            ("followers",),
-            ("followers_count",),
-            ("data", "followers"),
-            ("data", "followers_count"),
-            ("user", "followers"),
-            ("user", "followers_count"),
-            ("user", "edge_followed_by", "count"),
-        ]
-
-        for path in paths:
-            node = data
-            for key in path:
-                if not isinstance(node, dict) or key not in node:
-                    break
-                node = node[key]
-            else:
-                if isinstance(node, int):
-                    return node
-
-        # API responded, but no follower count found
-        return None
+        # ✅ VERIFIED PATH
+        return payload.get("data", {}).get("usersCount")
 
     except Exception as e:
-        print("RAPIDAPI ERROR:", str(e))
+        print(f"[followers] {username} failed:", e)
         return None
 
 
