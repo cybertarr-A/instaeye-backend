@@ -18,6 +18,12 @@ from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
 # ----------------------------
+# Audio Transcriber (NEW)
+# ----------------------------
+
+from audio_transcriber import router as audio_router
+
+# ----------------------------
 # CDN Resolver (yt-dlp only)
 # ----------------------------
 
@@ -29,11 +35,12 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.1.1",
+    version="4.1.2",
     description="Stateless Instagram intelligence backend (resolver-isolated)"
 )
 
 app.include_router(split_router)
+app.include_router(audio_router)  # ✅ AUDIO TRANSCRIPTION ROUTES
 
 # ============================
 # REQUEST MODELS
@@ -178,8 +185,7 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
 @app.post("/analyze/reel/vision", tags=["media"])
 def analyze_reel_vision_api(req: ReelVisionAnalyzeRequest):
     """
-    Vision-only, 3-prompt lightweight reel analyzer
-    (mini_video_analyzer)
+    Vision-only, lightweight reel analyzer
     """
     try:
         raw_url = extract_any_url(req)
