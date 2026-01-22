@@ -117,14 +117,16 @@ def extract_valid_instagram_username(link: str) -> Optional[str]:
 
 def fetch_followers_rapidapi(username: str) -> Optional[int]:
     """
-    Fetch follower count from RapidAPI provider.
-    Provider response formats vary, so we normalize defensively.
+    Provider-agnostic RapidAPI follower extractor.
+    Works with most Instagram stats APIs.
     """
+
     if not RAPIDAPI_KEY or not RAPIDAPI_HOST:
         return None
 
     try:
-        url = f"https://{RAPIDAPI_HOST}/user"
+        # Most common endpoint used by Instagram stats providers
+        url = f"https://{RAPIDAPI_HOST}/statistics"
 
         headers = {
             "X-RapidAPI-Key": RAPIDAPI_KEY,
@@ -137,27 +139,40 @@ def fetch_followers_rapidapi(username: str) -> Optional[int]:
             url,
             headers=headers,
             params=params,
-            timeout=REQUEST_TIMEOUT
+            timeout=15
         )
         r.raise_for_status()
 
         data = r.json()
 
-        # Try common fields safely
-        for key in ("followers", "followers_count", "follower_count"):
-            if key in data and isinstance(data[key], int):
-                return data[key]
+        # Try all known follower locations defensively
+        paths = [
+            ("followers",),
+            ("followers_count",),
+            ("data", "followers"),
+            ("data", "followers_count"),
+            ("user", "followers"),
+            ("user", "followers_count"),
+            ("user", "edge_followed_by", "count"),
+        ]
 
-        # Some APIs nest data
-        if "data" in data:
-            for key in ("followers", "followers_count"):
-                if key in data["data"]:
-                    return data["data"][key]
+        for path in paths:
+            node = data
+            for key in path:
+                if not isinstance(node, dict) or key not in node:
+                    break
+                node = node[key]
+            else:
+                if isinstance(node, int):
+                    return node
 
+        # API responded, but no follower count found
         return None
 
-    except Exception:
+    except Exception as e:
+        print("RAPIDAPI ERROR:", str(e))
         return None
+
 
 # ============================
 # ROUTES
