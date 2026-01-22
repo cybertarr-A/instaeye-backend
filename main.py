@@ -18,13 +18,19 @@ from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
 # ----------------------------
-# Audio Transcriber (FILE + URL)
+# Audio Transcriber
 # ----------------------------
 
 from audio_transcriber import router as audio_router
 
 # ----------------------------
-# CDN Resolver (yt-dlp only)
+# Instagram Discovery (SerpAPI + followers)
+# ----------------------------
+
+from instagram_finder import router as instagram_finder_router
+
+# ----------------------------
+# CDN Resolver
 # ----------------------------
 
 from cdn_resolver import resolve_instagram_cdn, CDNResolveError
@@ -35,16 +41,18 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.2.0",
-    description="Stateless Instagram intelligence backend (resolver-isolated)"
+    version="4.3.0",
+    description="Stateless Instagram intelligence backend (router-based)"
 )
 
-# ----------------------------
+# ============================
 # ROUTERS
-# ----------------------------
+# ============================
 
 app.include_router(split_router)
-app.include_router(audio_router)   # ✅ /audio/transcribe & /audio/transcribe-url
+app.include_router(audio_router)
+app.include_router(instagram_finder_router)  # ✅ FIXES 404
+# (instagram finder now lives at /instagram/*)
 
 # ============================
 # REQUEST MODELS
@@ -119,9 +127,15 @@ def home():
     return {
         "status": "ok",
         "service": "InstaEye backend",
-        "mode": "stateless",
-        "resolver": "isolated",
-        "version": app.version
+        "version": app.version,
+        "modules": [
+            "profile-analysis",
+            "content-ideas",
+            "media-analysis",
+            "audio-transcription",
+            "cdn-resolver",
+            "instagram-discovery"
+        ]
     }
 
 # ----------------------------
@@ -163,14 +177,10 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
         if not raw_url:
             return error_response("No video URL provided")
 
-        clean_url = normalize_url(raw_url)
-        return analyze_reel(clean_url)
+        return analyze_reel(normalize_url(raw_url))
 
     except Exception:
-        return error_response(
-            "Reel analysis failed",
-            traceback.format_exc()
-        )
+        return error_response("Reel analysis failed", traceback.format_exc())
 
 
 @app.post("/analyze/reel/vision", tags=["media"])
@@ -180,14 +190,10 @@ def analyze_reel_vision_api(req: ReelVisionAnalyzeRequest):
         if not raw_url:
             return error_response("No reel URL provided")
 
-        clean_url = normalize_url(raw_url)
-        return analyze_reel(clean_url)
+        return analyze_reel(normalize_url(raw_url))
 
     except Exception:
-        return error_response(
-            "Vision reel analysis failed",
-            traceback.format_exc()
-        )
+        return error_response("Vision reel analysis failed", traceback.format_exc())
 
 
 @app.post("/analyze-reel-audio", tags=["media"])
@@ -195,20 +201,16 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
 
 # ----------------------------
-# CDN RESOLVER
+# CDN Resolver
 # ----------------------------
 
 @app.post("/resolve/reel", tags=["resolver"])
 def resolve_reel_api(req: ReelResolveRequest):
     try:
-        clean_url = normalize_url(req.url)
-        return resolve_instagram_cdn(clean_url)
+        return resolve_instagram_cdn(normalize_url(req.url))
 
     except CDNResolveError as e:
         return error_response("CDN resolution failed", str(e))
 
     except Exception:
-        return error_response(
-            "Unexpected resolver error",
-            traceback.format_exc()
-        )
+        return error_response("Unexpected resolver error", traceback.format_exc())
