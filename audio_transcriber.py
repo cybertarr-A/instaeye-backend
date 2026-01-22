@@ -1,8 +1,9 @@
 import os
-import uuid
-import shutil
+import io
 import traceback
-from fastapi import APIRouter, UploadFile, File, HTTPException
+import requests
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from openai import OpenAI
 
 # ============================
@@ -15,48 +16,37 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-AUDIO_TMP_DIR = "/tmp/audio"
-os.makedirs(AUDIO_TMP_DIR, exist_ok=True)
+router = APIRouter(prefix="/audio", tags=["audio"])
 
 # ============================
-# ROUTER
+# REQUEST MODEL
 # ============================
 
-router = APIRouter(
-    prefix="/audio",
-    tags=["audio"]
-)
+class AudioURLRequest(BaseModel):
+    audio_url: str
 
 # ============================
-# ROUTES
+# ROUTE
 # ============================
 
-@router.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
-    """
-    Mini audio transcriber.
-    Designed for short audio (~5 seconds).
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file uploaded")
-
-    if not file.content_type or not file.content_type.startswith("audio/"):
-        raise HTTPException(status_code=400, detail="Invalid audio file type")
-
-    audio_id = str(uuid.uuid4())
-    audio_path = os.path.join(AUDIO_TMP_DIR, f"{audio_id}_{file.filename}")
-
+@router.post("/transcribe-url")
+def transcribe_audio_from_url(req: AudioURLRequest):
     try:
-        # Save audio temporarily
-        with open(audio_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        r = requests.get(
+            req.audio_url,
+            stream=True,
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        r.raise_for_status()
 
-        # Transcribe via OpenAI
-        with open(audio_path, "rb") as audio_file:
-            result = client.audio.transcriptions.create(
-                file=audio_file,
-                model="gpt-4o-transcribe"
-            )
+        audio_bytes = io.BytesIO(r.content)
+        audio_bytes.name = "audio.mp3"  # required by OpenAI SDK
+
+        result = client.audio.transcriptions.create(
+            file=audio_bytes,
+            model="gpt-4o-transcribe"
+        )
 
         return {
             "status": "ok",
@@ -66,10 +56,6 @@ async def transcribe_audio(file: UploadFile = File(...)):
     except Exception:
         return {
             "status": "error",
-            "message": "Audio transcription failed",
+            "message": "CDN audio transcription failed",
             "trace": traceback.format_exc()
         }
-
-    finally:
-        if os.path.exists(audio_path):
-            os.remove(audio_path)
