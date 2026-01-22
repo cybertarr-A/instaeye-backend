@@ -11,14 +11,14 @@ import traceback
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
-from mini_video_analyzer import analyze_reel   # ✅ UPDATED IMPORT
+from mini_video_analyzer import analyze_reel
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
 from media_splitter import router as split_router
 
 # ----------------------------
-# Audio Transcriber (NEW)
+# Audio Transcriber (FILE + URL)
 # ----------------------------
 
 from audio_transcriber import router as audio_router
@@ -35,12 +35,16 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.1.2",
+    version="4.2.0",
     description="Stateless Instagram intelligence backend (resolver-isolated)"
 )
 
+# ----------------------------
+# ROUTERS
+# ----------------------------
+
 app.include_router(split_router)
-app.include_router(audio_router)  # ✅ AUDIO TRANSCRIPTION ROUTES
+app.include_router(audio_router)   # ✅ /audio/transcribe & /audio/transcribe-url
 
 # ============================
 # REQUEST MODELS
@@ -59,21 +63,12 @@ class ImageAnalyzeRequest(BaseModel):
 
 
 class ReelAnalyzeRequest(BaseModel):
-    """
-    Accepts:
-    - direct CDN mp4 URL
-    - Supabase temporary URL
-    - local file path (internal pipeline)
-    """
     video_url: Optional[str] = None
     media_url: Optional[str] = None
     url: Optional[str] = None
 
 
 class ReelVisionAnalyzeRequest(BaseModel):
-    """
-    Explicit vision-only reel analysis (mini analyzer)
-    """
     video_url: Optional[str] = None
     media_url: Optional[str] = None
     url: Optional[str] = None
@@ -163,10 +158,6 @@ def analyze_image_api(req: ImageAnalyzeRequest):
 
 @app.post("/analyze-reel", tags=["media"])
 def analyze_reel_api(req: ReelAnalyzeRequest):
-    """
-    Generic reel analysis entry.
-    Can accept CDN, Supabase temp URL, or internal file path.
-    """
     try:
         raw_url = extract_any_url(req)
         if not raw_url:
@@ -184,9 +175,6 @@ def analyze_reel_api(req: ReelAnalyzeRequest):
 
 @app.post("/analyze/reel/vision", tags=["media"])
 def analyze_reel_vision_api(req: ReelVisionAnalyzeRequest):
-    """
-    Vision-only, lightweight reel analyzer
-    """
     try:
         raw_url = extract_any_url(req)
         if not raw_url:
@@ -207,7 +195,7 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
 
 # ----------------------------
-# CDN RESOLVER (yt-dlp)
+# CDN RESOLVER
 # ----------------------------
 
 @app.post("/resolve/reel", tags=["resolver"])
