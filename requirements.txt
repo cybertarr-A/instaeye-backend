@@ -9,6 +9,7 @@ python-dateutil
 supabase
 instaloader
 python-multipart
+aiohttp==3.9.5
 
 # Media & ML (Python 3.11 compatible)
 opencv-python-headless
@@ -17,6 +18,7 @@ librosa==0.10.2.post1
 numpy==1.26.4
 scipy==1.11.4
 soundfile==0.12.1
+
 
 
 
