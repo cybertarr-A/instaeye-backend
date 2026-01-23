@@ -11,7 +11,11 @@ import traceback
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
-from mini_video_analyzer import analyze_reel
+
+# 🔥 BOTH video analyzers (aliased clearly)
+from mini_video_analyzer import analyze_reel as analyze_reel_mini
+from video_analyzer import analyze_reel as analyze_reel_full
+
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
@@ -24,7 +28,7 @@ from media_splitter import router as split_router
 from audio_transcriber import router as audio_router
 
 # ----------------------------
-# Instagram Discovery (SerpAPI + followers)
+# Instagram Discovery
 # ----------------------------
 
 from instagram_finder import router as instagram_finder_router
@@ -41,8 +45,8 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.3.0",
-    description="Stateless Instagram intelligence backend (router-based)"
+    version="4.4.0",
+    description="Stateless Instagram intelligence backend (multi-analyzer)"
 )
 
 # ============================
@@ -51,8 +55,7 @@ app = FastAPI(
 
 app.include_router(split_router)
 app.include_router(audio_router)
-app.include_router(instagram_finder_router)  # ✅ FIXES 404
-# (instagram finder now lives at /instagram/*)
+app.include_router(instagram_finder_router)
 
 # ============================
 # REQUEST MODELS
@@ -71,12 +74,6 @@ class ImageAnalyzeRequest(BaseModel):
 
 
 class ReelAnalyzeRequest(BaseModel):
-    video_url: Optional[str] = None
-    media_url: Optional[str] = None
-    url: Optional[str] = None
-
-
-class ReelVisionAnalyzeRequest(BaseModel):
     video_url: Optional[str] = None
     media_url: Optional[str] = None
     url: Optional[str] = None
@@ -119,7 +116,7 @@ def error_response(message: str, trace: Optional[str] = None):
     return payload
 
 # ============================
-# ROUTES
+# SYSTEM
 # ============================
 
 @app.get("/", tags=["system"])
@@ -131,16 +128,18 @@ def home():
         "modules": [
             "profile-analysis",
             "content-ideas",
-            "media-analysis",
+            "image-analysis",
+            "reel-mini-analyzer",
+            "reel-full-analyzer",
             "audio-transcription",
             "cdn-resolver",
             "instagram-discovery"
         ]
     }
 
-# ----------------------------
-# Profile & Content Analysis
-# ----------------------------
+# ============================
+# PROFILE & CONTENT
+# ============================
 
 @app.post("/analyze", tags=["profiles"])
 def analyze_profile_api(req: AnalyzeProfilesRequest):
@@ -161,48 +160,63 @@ def top_posts_api(req: TopPostsRequest):
 def analyze_industry_api(req: IndustryAnalyzeRequest):
     return analyze_industry(req.keywords, req.news_api_key)
 
-# ----------------------------
-# Media Analysis
-# ----------------------------
+# ============================
+# MEDIA ANALYSIS
+# ============================
 
 @app.post("/analyze-image", tags=["media"])
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
 
+# ----------------------------
+# MINI VIDEO ANALYZER
+# ----------------------------
 
-@app.post("/analyze-reel", tags=["media"])
-def analyze_reel_api(req: ReelAnalyzeRequest):
-    try:
-        raw_url = extract_any_url(req)
-        if not raw_url:
-            return error_response("No video URL provided")
-
-        return analyze_reel(normalize_url(raw_url))
-
-    except Exception:
-        return error_response("Reel analysis failed", traceback.format_exc())
-
-
-@app.post("/analyze/reel/vision", tags=["media"])
-def analyze_reel_vision_api(req: ReelVisionAnalyzeRequest):
+@app.post("/analyze/reel/mini", tags=["media"])
+def analyze_reel_mini_api(req: ReelAnalyzeRequest):
     try:
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No reel URL provided")
 
-        return analyze_reel(normalize_url(raw_url))
+        return analyze_reel_mini(normalize_url(raw_url))
 
     except Exception:
-        return error_response("Vision reel analysis failed", traceback.format_exc())
+        return error_response(
+            "Mini video analyzer failed",
+            traceback.format_exc()
+        )
 
+# ----------------------------
+# FULL VIDEO ANALYZER
+# ----------------------------
+
+@app.post("/analyze/reel/full", tags=["media"])
+def analyze_reel_full_api(req: ReelAnalyzeRequest):
+    try:
+        raw_url = extract_any_url(req)
+        if not raw_url:
+            return error_response("No reel URL provided")
+
+        return analyze_reel_full(normalize_url(raw_url))
+
+    except Exception:
+        return error_response(
+            "Full video analyzer failed",
+            traceback.format_exc()
+        )
+
+# ----------------------------
+# AUDIO ANALYSIS
+# ----------------------------
 
 @app.post("/analyze-reel-audio", tags=["media"])
 def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
 
-# ----------------------------
-# CDN Resolver
-# ----------------------------
+# ============================
+# CDN RESOLVER
+# ============================
 
 @app.post("/resolve/reel", tags=["resolver"])
 def resolve_reel_api(req: ReelResolveRequest):
@@ -213,4 +227,7 @@ def resolve_reel_api(req: ReelResolveRequest):
         return error_response("CDN resolution failed", str(e))
 
     except Exception:
-        return error_response("Unexpected resolver error", traceback.format_exc())
+        return error_response(
+            "Unexpected resolver error",
+            traceback.format_exc()
+        )
