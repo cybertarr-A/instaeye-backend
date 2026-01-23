@@ -28,7 +28,7 @@ from media_splitter import router as split_router
 from audio_transcriber import router as audio_router
 
 # ----------------------------
-# Instagram Discovery
+# Instagram Discovery + Ranking (ASYNC)
 # ----------------------------
 
 from instagram_finder import router as instagram_finder_router
@@ -45,8 +45,8 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.4.0",
-    description="Stateless Instagram intelligence backend (multi-analyzer)"
+    version="4.5.0",
+    description="Stateless Instagram intelligence backend (multi-analyzer, async ranking)"
 )
 
 # ============================
@@ -55,6 +55,10 @@ app = FastAPI(
 
 app.include_router(split_router)
 app.include_router(audio_router)
+
+# 🔥 exposes:
+# - /instagram/discover  (if enabled)
+# - /instagram/rank      (500 accounts → top 100, async)
 app.include_router(instagram_finder_router)
 
 # ============================
@@ -125,6 +129,20 @@ def home():
         "status": "ok",
         "service": "InstaEye backend",
         "version": app.version,
+        "routers": {
+            "instagram": [
+                "/instagram/rank"
+            ],
+            "media": [
+                "/analyze-image",
+                "/analyze/reel/mini",
+                "/analyze/reel/full",
+                "/analyze-reel-audio"
+            ],
+            "resolver": [
+                "/resolve/reel"
+            ]
+        },
         "modules": [
             "profile-analysis",
             "content-ideas",
@@ -133,7 +151,8 @@ def home():
             "reel-full-analyzer",
             "audio-transcription",
             "cdn-resolver",
-            "instagram-discovery"
+            "instagram-discovery",
+            "instagram-ranking (async)"
         ]
     }
 
