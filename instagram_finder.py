@@ -198,8 +198,12 @@ def discover_and_rank(req: InstagramRankRequest):
                 "data_source": "graph_api"
             })
 
-        except Exception:
-            continue
+        except Exception as e:
+    accounts.append({
+        "username": u,
+        "error": str(e),
+        "data_source": "graph_api_failed"
+    })
 
     ranked = sorted(accounts, key=lambda x: x["account_score"], reverse=True)
 
