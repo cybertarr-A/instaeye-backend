@@ -1,8 +1,7 @@
 import os
 import re
-import asyncio
-import aiohttp
-from typing import List, Dict, Set, Optional
+import requests
+from typing import List, Dict, Any, Optional, Set
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
@@ -21,15 +20,15 @@ router = APIRouter(
 # CONFIG
 # ==================================================
 
+ACCESS_TOKEN = os.getenv("IG_ACCESS_TOKEN")
+IG_USER_ID = os.getenv("IG_PARENT_USER_ID")
 SERPAPI_KEY = os.getenv("SERPAPI_KEY")
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
-RAPIDAPI_HOST = os.getenv("RAPIDAPI_HOST")
 
+GRAPH_BASE = "https://graph.facebook.com/v24.0"
 SERPAPI_URL = "https://serpapi.com/search.json"
 
-MAX_ACCOUNTS = 500
-TOP_ACCOUNTS = 100
-CONCURRENCY_LIMIT = 20
+MAX_ACCOUNTS = 100   # Graph API practical limit
+TOP_ACCOUNTS = 50
 
 USERNAME_REGEX = re.compile(r"^[a-zA-Z0-9._]{1,30}$")
 
@@ -40,13 +39,15 @@ EXCLUDED_PATHS = {
     "terms", "blog"
 }
 
+if not ACCESS_TOKEN or not IG_USER_ID:
+    raise RuntimeError("IG_ACCESS_TOKEN and IG_PARENT_USER_ID must be set")
+
 # ==================================================
 # MODELS
 # ==================================================
 
 class InstagramRankRequest(BaseModel):
     keywords: List[str] = Field(..., min_items=1)
-    min_followers: Optional[int] = None
 
 # ==================================================
 # HELPERS
@@ -57,7 +58,7 @@ def build_query(keywords: List[str]) -> str:
     return f"site:instagram.com ({quoted})"
 
 
-def extract_valid_instagram_username(link: str) -> Optional[str]:
+def extract_username(link: str) -> Optional[str]:
     try:
         parsed = urlparse(link)
         if "instagram.com" not in parsed.netloc:
@@ -77,128 +78,133 @@ def extract_valid_instagram_username(link: str) -> Optional[str]:
     except Exception:
         return None
 
-# ==================================================
-# ASYNC FETCHERS
-# ==================================================
 
-async def serpapi_search(session, query: str, start: int) -> Dict:
-    if not SERPAPI_KEY:
-        raise HTTPException(500, "SERPAPI_KEY not set")
-
-    async with session.get(
-        SERPAPI_URL,
-        params={
-            "engine": "google",
-            "q": query,
-            "api_key": SERPAPI_KEY,
-            "num": 20,
-            "start": start
-        }
-    ) as r:
-        r.raise_for_status()
-        return await r.json()
-
-
-async def fetch_followers(session, username: str) -> Optional[int]:
-    """
-    Uses RapidAPI if available.
-    Safe: returns None if provider does not support it.
-    """
-    if not RAPIDAPI_KEY or not RAPIDAPI_HOST:
-        return None
-
-    try:
-        async with session.get(
-            f"https://{RAPIDAPI_HOST}/statistics",
-            headers={
-                "X-RapidAPI-Key": RAPIDAPI_KEY,
-                "X-RapidAPI-Host": RAPIDAPI_HOST
-            },
-            params={"username": username}
-        ) as r:
-            r.raise_for_status()
-            data = await r.json()
-            return data.get("data", {}).get("usersCount")
-    except Exception:
-        return None
+def graph_get(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    params["access_token"] = ACCESS_TOKEN
+    r = requests.get(url, params=params, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(400, r.text)
+    return r.json()
 
 # ==================================================
-# SCORING (FALLBACK-FIRST, SAFE)
+# GRAPH API BUSINESS DISCOVERY
 # ==================================================
 
-def fallback_score(followers: Optional[int]) -> float:
-    """
-    Ensures non-zero ranking even without post data.
-    """
-    if not followers:
-        return 1.0
-    return followers * 0.01
+def fetch_creator(username: str, limit: int = 25) -> Dict[str, Any]:
+    fields = (
+        f"business_discovery.username({username}){{"
+        f"id,username,name,profile_picture_url,followers_count,"
+        f"media_count,biography,website,"
+        f"media.limit({limit}){{"
+        f"id,caption,media_type,media_product_type,"
+        f"permalink,media_url,timestamp,like_count,comments_count"
+        f"}}}}"
+    )
 
+    data = graph_get(
+        f"{GRAPH_BASE}/{IG_USER_ID}",
+        {"fields": fields}
+    )
+
+    bd = data.get("business_discovery")
+    if not bd:
+        raise HTTPException(404, f"No data for @{username}")
+
+    followers = bd.get("followers_count", 1)
+    media = bd.get("media", {}).get("data", [])
+
+    # Engagement calculation (realistic + legal)
+    engagement_total = sum(
+        m.get("like_count", 0) + m.get("comments_count", 0)
+        for m in media
+    )
+
+    engagement_rate = round(
+        (engagement_total / followers) * 100, 3
+    ) if followers else 0
+
+    return {
+        "username": bd.get("username"),
+        "followers": followers,
+        "engagement_rate": engagement_rate,
+        "post_count": len(media),
+        "media": media
+    }
 
 # ==================================================
-# ACCOUNT PIPELINE
+# SCORING
 # ==================================================
 
-async def process_account(sem, session, username, min_followers):
-    async with sem:
-        followers = await fetch_followers(session, username)
+def score_account(user: Dict[str, Any]) -> float:
+    followers = user["followers"]
+    er = user["engagement_rate"]
+    posts = user["post_count"]
 
-        if min_followers and followers and followers < min_followers:
-            return None
-
-        score = fallback_score(followers)
-
-        return {
-            "username": username,
-            "followers": followers,
-            "post_count": 0,
-            "account_score": round(score, 4),
-            "data_source": "rapidapi" if followers is not None else "fallback"
-        }
+    # Balanced ranking formula
+    return round(
+        (followers * 0.001) +
+        (er * 10) +
+        (posts * 0.5),
+        4
+    )
 
 # ==================================================
 # ROUTE
 # ==================================================
 
 @router.post("/rank")
-async def discover_and_rank(req: InstagramRankRequest):
+def discover_and_rank(req: InstagramRankRequest):
+    if not SERPAPI_KEY:
+        raise HTTPException(500, "SERPAPI_KEY not set")
+
     query = build_query(req.keywords)
+
+    # ---- Discovery ----
+    serp = requests.get(
+        SERPAPI_URL,
+        params={
+            "engine": "google",
+            "q": query,
+            "api_key": SERPAPI_KEY,
+            "num": 100
+        },
+        timeout=30
+    ).json()
 
     discovered: Set[str] = set()
     usernames: List[str] = []
 
-    timeout = aiohttp.ClientTimeout(total=30)
-    sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
+    for item in serp.get("organic_results", []):
+        u = extract_username(item.get("link", ""))
+        if u and u not in discovered:
+            discovered.add(u)
+            usernames.append(u)
+        if len(usernames) >= MAX_ACCOUNTS:
+            break
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        start = 0
-        while len(usernames) < MAX_ACCOUNTS:
-            data = await serpapi_search(session, query, start)
-            start += 20
+    # ---- Graph API Fetch ----
+    accounts = []
+    for u in usernames:
+        try:
+            user = fetch_creator(u)
+            score = score_account(user)
 
-            for item in data.get("organic_results", []):
-                username = extract_valid_instagram_username(item.get("link", ""))
-                if username and username not in discovered:
-                    discovered.add(username)
-                    usernames.append(username)
+            accounts.append({
+                "username": u,
+                "followers": user["followers"],
+                "engagement_rate": user["engagement_rate"],
+                "post_count": user["post_count"],
+                "account_score": score,
+                "data_source": "graph_api"
+            })
 
-                if len(usernames) >= MAX_ACCOUNTS:
-                    break
+        except Exception:
+            continue
 
-            if not data.get("organic_results"):
-                break
-
-        tasks = [
-            process_account(sem, session, u, req.min_followers)
-            for u in usernames
-        ]
-
-        results = [r for r in await asyncio.gather(*tasks) if r]
-
-    ranked = sorted(results, key=lambda x: x["account_score"], reverse=True)
+    ranked = sorted(accounts, key=lambda x: x["account_score"], reverse=True)
 
     return {
         "status": "success",
-        "total_accounts": len(results),
+        "total_accounts": len(accounts),
         "top_accounts": ranked[:TOP_ACCOUNTS]
     }
