@@ -102,7 +102,7 @@ def extract_frame(video_path: Path) -> Path:
     return img_path
 
 # --------------------------------------------------
-# Upload frame
+# Upload frame to Supabase
 # --------------------------------------------------
 
 def upload_frame(image_path: Path) -> str:
@@ -121,10 +121,21 @@ def upload_frame(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# Gemini Vision Analysis (UPDATED)
+# Gemini Vision Analysis (CORRECT + SUPPORTED)
 # --------------------------------------------------
 
 def run_prompt(image_url: str, prompt: str) -> str:
+    # 1️⃣ Download image bytes from Supabase
+    img_response = requests.get(image_url, timeout=30)
+    img_response.raise_for_status()
+
+    # 2️⃣ Upload image bytes to Gemini
+    uploaded_file = client.files.upload(
+        file=img_response.content,
+        config={"mime_type": "image/jpeg"},
+    )
+
+    # 3️⃣ Run Gemini multimodal inference
     response = client.models.generate_content(
         model=MODEL_NAME,
         contents=[
@@ -135,13 +146,14 @@ def run_prompt(image_url: str, prompt: str) -> str:
                     {
                         "file_data": {
                             "mime_type": "image/jpeg",
-                            "file_uri": image_url,
+                            "file_uri": uploaded_file.uri,
                         }
                     },
                 ],
             }
         ],
     )
+
     return response.text.strip()
 
 # --------------------------------------------------
