@@ -4,13 +4,21 @@ import uuid
 import requests
 import tempfile
 from pathlib import Path
-from openai import OpenAI
+
+import google.generativeai as genai
 from supabase import create_client, Client
 
 # --------------------------------------------------
 # Clients
 # --------------------------------------------------
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not set")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+model = genai.GenerativeModel("gemini-2.0-flash-exp")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -24,6 +32,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 # --------------------------------------------------
 # PROMPT SET (5 ANALYSIS MODES)
 # --------------------------------------------------
+
 PROMPTS = {
     "visual_summary": (
         "Describe exactly what is visible in this Instagram Reel frame. "
@@ -51,6 +60,7 @@ PROMPTS = {
 # --------------------------------------------------
 # Download video
 # --------------------------------------------------
+
 def download_video(video_url: str) -> Path:
     tmp = Path(tempfile.mkstemp(suffix=".mp4")[1])
     r = requests.get(video_url, stream=True, timeout=60)
@@ -66,6 +76,7 @@ def download_video(video_url: str) -> Path:
 # --------------------------------------------------
 # Extract representative frame
 # --------------------------------------------------
+
 def extract_frame(video_path: Path) -> Path:
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -90,6 +101,7 @@ def extract_frame(video_path: Path) -> Path:
 # --------------------------------------------------
 # Upload frame
 # --------------------------------------------------
+
 def upload_frame(image_path: Path) -> str:
     remote_path = f"frames/{uuid.uuid4()}.jpg"
 
@@ -106,26 +118,22 @@ def upload_frame(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# OpenAI Vision Analysis
+# Gemini Vision Analysis (ONLY CHANGE)
 # --------------------------------------------------
+
 def run_prompt(image_url: str, prompt: str) -> str:
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": prompt},
-                    {"type": "input_image", "image_url": image_url},
-                ],
-            }
-        ],
+    response = model.generate_content(
+        [
+            prompt,
+            image_url  # public Supabase URL
+        ]
     )
-    return response.output_text
+    return response.text.strip()
 
 # --------------------------------------------------
 # MAIN ENTRY
 # --------------------------------------------------
+
 def analyze_reel(video_url: str) -> dict:
     video_path = None
     frame_path = None
@@ -145,7 +153,8 @@ def analyze_reel(video_url: str) -> dict:
             "frame_url": frame_url,
             "analyses": results,
             "analysis_count": len(results),
-            "method": "multi_prompt_openai_vision",
+            "method": "multi_prompt_gemini_vision",
+            "model": "gemini-2.0-flash-exp",
         }
 
     finally:
