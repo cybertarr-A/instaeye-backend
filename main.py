@@ -10,8 +10,8 @@ import traceback
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.5.1",
-    description="Stateless Instagram intelligence backend (multi-analyzer, async ranking)"
+    version="4.5.2",
+    description="Stateless Instagram intelligence backend (multi-analyzer, Gemini-ready)"
 )
 
 # ============================
@@ -22,7 +22,7 @@ from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
-# 🔥 BOTH video analyzers
+# 🔥 Video analyzers (explicit aliasing)
 from mini_video_analyzer import analyze_reel as analyze_reel_mini
 from video_analyzer import analyze_reel as analyze_reel_full
 
@@ -121,15 +121,17 @@ def home():
         "service": "InstaEye backend",
         "version": app.version,
         "routes": {
-            "instagram": ["/instagram/rank"],
+            "profiles": ["/analyze", "/top-posts"],
+            "content": ["/generate-content-ideas"],
             "media": [
                 "/analyze-image",
                 "/analyze/reel/mini",
                 "/analyze/reel/full",
-                "/analyze-reel-audio"
+                "/analyze-reel-audio",
             ],
-            "resolver": ["/resolve/reel"]
-        }
+            "resolver": ["/resolve/reel"],
+            "discovery": ["/instagram/*"],
+        },
     }
 
 # ============================
@@ -173,12 +175,17 @@ def analyze_reel_mini_api(req: ReelAnalyzeRequest):
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No reel URL provided")
+
         return analyze_reel_mini(normalize_url(raw_url))
+
     except Exception:
-        return error_response("Mini video analyzer failed", traceback.format_exc())
+        return error_response(
+            "Mini video analyzer failed",
+            traceback.format_exc()
+        )
 
 # ----------------------------
-# FULL VIDEO ANALYZER
+# FULL VIDEO ANALYZER (Gemini)
 # ----------------------------
 
 @app.post("/analyze/reel/full", tags=["media"])
@@ -187,9 +194,14 @@ def analyze_reel_full_api(req: ReelAnalyzeRequest):
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No reel URL provided")
+
         return analyze_reel_full(normalize_url(raw_url))
+
     except Exception:
-        return error_response("Full video analyzer failed", traceback.format_exc())
+        return error_response(
+            "Full video analyzer failed",
+            traceback.format_exc()
+        )
 
 # ----------------------------
 # AUDIO ANALYSIS
@@ -207,7 +219,12 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
 def resolve_reel_api(req: ReelResolveRequest):
     try:
         return resolve_instagram_cdn(normalize_url(req.url))
+
     except CDNResolveError as e:
         return error_response("CDN resolution failed", str(e))
+
     except Exception:
-        return error_response("Unexpected resolver error", traceback.format_exc())
+        return error_response(
+            "Unexpected resolver error",
+            traceback.format_exc()
+        )
