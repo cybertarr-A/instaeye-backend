@@ -4,61 +4,52 @@ from typing import Optional, List, Any
 from urllib.parse import urlparse, urlunparse
 import traceback
 
-# ----------------------------
-# Core analysis modules
-# ----------------------------
-
-from instagram_analyzer import analyze_profiles
-from content_ideas import generate_content
-from image_analyzer import analyze_image
-
-# 🔥 BOTH video analyzers (aliased clearly)
-from mini_video_analyzer import analyze_reel as analyze_reel_mini
-from video_analyzer import analyze_reel as analyze_reel_full
-
-from top_posts import get_top_posts
-from trend_engine import analyze_industry
-from audio_pipeline import process_audio
-from media_splitter import router as split_router
-
-# ----------------------------
-# Audio Transcriber
-# ----------------------------
-
-from audio_transcriber import router as audio_router
-
-# ----------------------------
-# Instagram Discovery + Ranking (ASYNC)
-# ----------------------------
-
-from instagram_finder import router as instagram_finder_router
-
-# ----------------------------
-# CDN Resolver
-# ----------------------------
-
-from cdn_resolver import resolve_instagram_cdn, CDNResolveError
-
 # ============================
 # APP INIT
 # ============================
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.5.0",
+    version="4.5.1",
     description="Stateless Instagram intelligence backend (multi-analyzer, async ranking)"
 )
+
+# ============================
+# CORE MODULES
+# ============================
+
+from instagram_analyzer import analyze_profiles
+from content_ideas import generate_content
+from image_analyzer import analyze_image
+
+# 🔥 BOTH video analyzers
+from mini_video_analyzer import analyze_reel as analyze_reel_mini
+from video_analyzer import analyze_reel as analyze_reel_full
+
+from top_posts import get_top_posts
+from trend_engine import analyze_industry
+from audio_pipeline import process_audio
 
 # ============================
 # ROUTERS
 # ============================
 
+from media_splitter import router as split_router
+from audio_transcriber import router as audio_router
+from instagram_finder import router as instagram_finder_router
+
+# ============================
+# CDN Resolver
+# ============================
+
+from cdn_resolver import resolve_instagram_cdn, CDNResolveError
+
+# ============================
+# REGISTER ROUTERS
+# ============================
+
 app.include_router(split_router)
 app.include_router(audio_router)
-
-# 🔥 exposes:
-# - /instagram/discover  (if enabled)
-# - /instagram/rank      (500 accounts → top 100, async)
 app.include_router(instagram_finder_router)
 
 # ============================
@@ -120,7 +111,7 @@ def error_response(message: str, trace: Optional[str] = None):
     return payload
 
 # ============================
-# SYSTEM
+# SYSTEM / HEALTH
 # ============================
 
 @app.get("/", tags=["system"])
@@ -129,31 +120,16 @@ def home():
         "status": "ok",
         "service": "InstaEye backend",
         "version": app.version,
-        "routers": {
-            "instagram": [
-                "/instagram/rank"
-            ],
+        "routes": {
+            "instagram": ["/instagram/rank"],
             "media": [
                 "/analyze-image",
                 "/analyze/reel/mini",
                 "/analyze/reel/full",
                 "/analyze-reel-audio"
             ],
-            "resolver": [
-                "/resolve/reel"
-            ]
-        },
-        "modules": [
-            "profile-analysis",
-            "content-ideas",
-            "image-analysis",
-            "reel-mini-analyzer",
-            "reel-full-analyzer",
-            "audio-transcription",
-            "cdn-resolver",
-            "instagram-discovery",
-            "instagram-ranking (async)"
-        ]
+            "resolver": ["/resolve/reel"]
+        }
     }
 
 # ============================
@@ -197,14 +173,9 @@ def analyze_reel_mini_api(req: ReelAnalyzeRequest):
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No reel URL provided")
-
         return analyze_reel_mini(normalize_url(raw_url))
-
     except Exception:
-        return error_response(
-            "Mini video analyzer failed",
-            traceback.format_exc()
-        )
+        return error_response("Mini video analyzer failed", traceback.format_exc())
 
 # ----------------------------
 # FULL VIDEO ANALYZER
@@ -216,14 +187,9 @@ def analyze_reel_full_api(req: ReelAnalyzeRequest):
         raw_url = extract_any_url(req)
         if not raw_url:
             return error_response("No reel URL provided")
-
         return analyze_reel_full(normalize_url(raw_url))
-
     except Exception:
-        return error_response(
-            "Full video analyzer failed",
-            traceback.format_exc()
-        )
+        return error_response("Full video analyzer failed", traceback.format_exc())
 
 # ----------------------------
 # AUDIO ANALYSIS
@@ -241,12 +207,7 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
 def resolve_reel_api(req: ReelResolveRequest):
     try:
         return resolve_instagram_cdn(normalize_url(req.url))
-
     except CDNResolveError as e:
         return error_response("CDN resolution failed", str(e))
-
     except Exception:
-        return error_response(
-            "Unexpected resolver error",
-            traceback.format_exc()
-        )
+        return error_response("Unexpected resolver error", traceback.format_exc())
