@@ -5,20 +5,23 @@ import requests
 import tempfile
 from pathlib import Path
 
-import google.generativeai as genai
+from google import genai
 from supabase import create_client, Client
 
 # --------------------------------------------------
-# Clients
+# Gemini Client (OFFICIAL SDK)
 # --------------------------------------------------
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
+MODEL_NAME = "gemini-2.0-flash-exp"
 
-model = genai.GenerativeModel("gemini-2.0-flash-exp")
+# --------------------------------------------------
+# Supabase
+# --------------------------------------------------
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -118,15 +121,26 @@ def upload_frame(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# Gemini Vision Analysis (ONLY CHANGE)
+# Gemini Vision Analysis (UPDATED)
 # --------------------------------------------------
 
 def run_prompt(image_url: str, prompt: str) -> str:
-    response = model.generate_content(
-        [
-            prompt,
-            image_url  # public Supabase URL
-        ]
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=[
+            {
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "file_data": {
+                            "mime_type": "image/jpeg",
+                            "file_uri": image_url,
+                        }
+                    },
+                ],
+            }
+        ],
     )
     return response.text.strip()
 
@@ -154,7 +168,7 @@ def analyze_reel(video_url: str) -> dict:
             "analyses": results,
             "analysis_count": len(results),
             "method": "multi_prompt_gemini_vision",
-            "model": "gemini-2.0-flash-exp",
+            "model": MODEL_NAME,
         }
 
     finally:
