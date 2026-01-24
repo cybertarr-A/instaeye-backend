@@ -50,7 +50,9 @@ class InstagramRankRequest(BaseModel):
 # HELPERS
 # ================================
 def build_query(keywords: List[str]) -> str:
-    return f"site:instagram.com ({' OR '.join(f'\"{k}\"' for k in keywords)})"
+    quoted = " OR ".join([f'"{k}"' for k in keywords])
+    return f"site:instagram.com ({quoted})"
+
 
 
 def extract_username(link: str) -> Optional[str]:
