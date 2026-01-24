@@ -33,7 +33,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --------------------------------------------------
-# PROMPT SET (5 ANALYSIS MODES)
+# PROMPT SET
 # --------------------------------------------------
 
 PROMPTS = {
@@ -121,40 +121,53 @@ def upload_frame(image_path: Path) -> str:
     )
 
 # --------------------------------------------------
-# Gemini Vision Analysis (CORRECT + SUPPORTED)
+# Gemini Vision Analysis (CORRECT IMPLEMENTATION)
 # --------------------------------------------------
 
 def run_prompt(image_url: str, prompt: str) -> str:
-    # 1️⃣ Download image bytes from Supabase
+    # 1. Download image from Supabase
     img_response = requests.get(image_url, timeout=30)
     img_response.raise_for_status()
 
-    # 2️⃣ Upload image bytes to Gemini
-    uploaded_file = client.files.upload(
-        file=img_response.content,
-        config={"mime_type": "image/jpeg"},
-    )
+    # 2. Save to temporary file (Gemini requires file path)
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
+        tmp_img.write(img_response.content)
+        tmp_img_path = tmp_img.name
 
-    # 3️⃣ Run Gemini multimodal inference
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[
-            {
-                "role": "user",
-                "parts": [
-                    {"text": prompt},
-                    {
-                        "file_data": {
-                            "mime_type": "image/jpeg",
-                            "file_uri": uploaded_file.uri,
-                        }
-                    },
-                ],
-            }
-        ],
-    )
+    try:
+        # 3. Upload file to Gemini
+        uploaded_file = client.files.upload(
+            file=tmp_img_path,
+            config={"mime_type": "image/jpeg"},
+        )
 
-    return response.text.strip()
+        # 4. Run Gemini multimodal inference
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "file_data": {
+                                "mime_type": "image/jpeg",
+                                "file_uri": uploaded_file.uri,
+                            }
+                        },
+                    ],
+                }
+            ],
+        )
+
+        return response.text.strip()
+
+    finally:
+        # 5. Cleanup temp file
+        try:
+            os.unlink(tmp_img_path)
+        except OSError:
+            pass
 
 # --------------------------------------------------
 # MAIN ENTRY
