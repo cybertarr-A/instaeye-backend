@@ -11,6 +11,7 @@ from supabase import create_client, Client
 # ================= CONFIG =================
 
 FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
 TMP_DIR = Path("/tmp")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -47,21 +48,41 @@ def download_video(url: str) -> Path:
     return tmp_video
 
 
-def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
-    """
-    Upload file to Supabase and return a PUBLIC URL.
-    Bucket must be PUBLIC.
-    """
-    content_type = (
-        "video/mp4" if remote_path.endswith(".mp4") else "audio/wav"
+def has_audio(video_path: Path) -> bool:
+    result = subprocess.run(
+        [
+            FFPROBE,
+            "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            str(video_path),
+        ],
+        capture_output=True,
+        text=True,
     )
+    return bool(result.stdout.strip())
+
+
+def run_ffmpeg(cmd: list):
+    subprocess.run(
+        cmd,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+
+
+def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
+    content_type = "audio/wav" if remote_path.endswith(".wav") else "video/mp4"
 
     with open(local_path, "rb") as f:
         supabase.storage.from_(SUPABASE_BUCKET).upload(
             remote_path,
             f,
             {
-                "content-type": content_type,  # ✅ strings only
+                "content-type": content_type,
+                "upsert": True,
             },
         )
 
@@ -77,90 +98,93 @@ def split_media(video_path: Path, request_id: str) -> dict:
     job_dir.mkdir(parents=True, exist_ok=True)
 
     intro_video = job_dir / "intro_5s_video.mp4"
-    intro_audio = job_dir / "intro_5s_audio.wav"
     rest_video  = job_dir / "rest_video.mp4"
+    intro_audio = job_dir / "intro_5s_audio.wav"
     rest_audio  = job_dir / "rest_audio.wav"
 
-    # INTRO VIDEO (first 5s)
-    subprocess.run(
-        [
-            FFMPEG, "-y",
-            "-i", str(video_path),
-            "-t", "5",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-an",
-            str(intro_video)
-        ],
-        check=True
-    )
+    # -------- VIDEO --------
 
-    # REST VIDEO (after 5s)
-    subprocess.run(
-        [
-            FFMPEG, "-y",
-            "-i", str(video_path),
-            "-ss", "5",
-            "-movflags", "+faststart",
-            "-pix_fmt", "yuv420p",
-            "-c:v", "libx264",
-            "-preset", "veryfast",
-            "-crf", "23",
-            "-an",
-            str(rest_video)
-        ],
-        check=True
-    )
+    run_ffmpeg([
+        FFMPEG, "-y",
+        "-i", str(video_path),
+        "-t", "5",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-an",
+        str(intro_video)
+    ])
 
-    # INTRO AUDIO
-    subprocess.run(
-        [
+    run_ffmpeg([
+        FFMPEG, "-y",
+        "-i", str(video_path),
+        "-ss", "5",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-an",
+        str(rest_video)
+    ])
+
+    audio_exists = has_audio(video_path)
+
+    audio_urls = {}
+
+    # -------- AUDIO (SAFE) --------
+
+    if audio_exists:
+        run_ffmpeg([
             FFMPEG, "-y",
             "-i", str(video_path),
+            "-map", "0:a:0?",
             "-t", "5",
-            "-vn",
-            "-acodec", "pcm_s16le",
-            "-ar", "16000",
             "-ac", "1",
+            "-ar", "16000",
             str(intro_audio)
-        ],
-        check=True
-    )
+        ])
 
-    # REST AUDIO
-    subprocess.run(
-        [
+        run_ffmpeg([
             FFMPEG, "-y",
             "-i", str(video_path),
+            "-map", "0:a:0?",
             "-ss", "5",
-            "-vn",
-            "-acodec", "pcm_s16le",
-            "-ar", "16000",
             "-ac", "1",
+            "-ar", "16000",
             str(rest_audio)
-        ],
-        check=True
-    )
+        ])
 
-    base_path = f"{request_id}"
+        audio_urls = {
+            "intro_audio_url": upload_and_get_public_url(
+                intro_audio, f"{request_id}/intro_5s_audio.wav"
+            ),
+            "rest_audio_url": upload_and_get_public_url(
+                rest_audio, f"{request_id}/rest_audio.wav"
+            ),
+        }
 
-    return {
+    # -------- UPLOAD VIDEO --------
+
+    result = {
         "intro_video_url": upload_and_get_public_url(
-            intro_video, f"{base_path}/intro_5s_video.mp4"
-        ),
-        "intro_audio_url": upload_and_get_public_url(
-            intro_audio, f"{base_path}/intro_5s_audio.wav"
+            intro_video, f"{request_id}/intro_5s_video.mp4"
         ),
         "rest_video_url": upload_and_get_public_url(
-            rest_video, f"{base_path}/rest_video.mp4"
+            rest_video, f"{request_id}/rest_video.mp4"
         ),
-        "rest_audio_url": upload_and_get_public_url(
-            rest_audio, f"{base_path}/rest_audio.wav"
-        ),
+        **audio_urls,
     }
+
+    # -------- CLEANUP --------
+    try:
+        video_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+    return result
 
 # ================= API =================
 
