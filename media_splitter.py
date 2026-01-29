@@ -82,7 +82,7 @@ def upload_and_get_public_url(local_path: Path, remote_path: str) -> str:
             f,
             {
                 "content-type": content_type,
-                "upsert": True,
+                "upsert": "true",  # ✅ FIXED (string, not bool)
             },
         )
 
@@ -131,7 +131,6 @@ def split_media(video_path: Path, request_id: str) -> dict:
     ])
 
     audio_exists = has_audio(video_path)
-
     audio_urls = {}
 
     # -------- AUDIO (SAFE) --------
