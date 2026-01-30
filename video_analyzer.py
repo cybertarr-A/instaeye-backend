@@ -39,7 +39,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 PROMPTS = {
     "visual_summary": (
         "Describe exactly what is visible in this Instagram Reel frame. "
-        "Mention people, actions, objects, text overlays, and environment. "
+        "Pay attention to what the audio of the video is and what is being said and how that relates to the content of the video"
         "Do not infer intent."
     ),
     "content_category": (
