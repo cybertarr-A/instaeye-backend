@@ -16,8 +16,8 @@ from pydantic import BaseModel, Field
 # 1. Configuration & Clients
 # ==================================================
 
-# ✅ FIX: Use "gemini-1.5-flash" for best availability and speed with vision
-MODEL_NAME = "gemini-1.5-flash"
+# ✅ UPDATED: Using Gemini 2.0 Flash
+MODEL_NAME = "gemini-2.0-flash"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -122,7 +122,6 @@ def analyze_reel(video_url: str) -> dict:
 
         print(f"🤖 Analyzing with Gemini ({MODEL_NAME})...")
         
-        # ✅ FIX: Direct byte upload + Structured JSON Response
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -137,8 +136,6 @@ def analyze_reel(video_url: str) -> dict:
         )
 
         # Parse the result
-        # The SDK now returns a parsed object if a schema is provided, 
-        # or we can parse the text manually if needed.
         try:
             analysis_data = response.parsed
         except:
