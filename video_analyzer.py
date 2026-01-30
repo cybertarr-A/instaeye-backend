@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 
 from google import genai
 from google.genai import types
+from google.genai.errors import ClientError # Import for error handling
 from pydantic import BaseModel, Field
 
 # ============================
@@ -31,7 +32,6 @@ except Exception as e:
 # ============================
 # SUPER-PROMPTS (SCHEMA)
 # ============================
-# This schema acts as the prompt. Gemini 2.0 follows these descriptions instructions.
 
 class DeepVideoAnalysis(BaseModel):
     # 1. Visual Analysis
@@ -94,7 +94,7 @@ def analyze_reel(video_url: str) -> Dict[str, Any]:
         # 2. Upload to Gemini (Native Video Support)
         logging.info("☁️ Uploading video to Gemini...")
         
-        # 'file=' is the correct argument for the new SDK
+        # ✅ FIXED: 'file=' is the correct argument
         gemini_file = client.files.upload(file=video_path)
         
         # 3. Poll for Processing
@@ -106,38 +106,54 @@ def analyze_reel(video_url: str) -> Dict[str, Any]:
         if gemini_file.state.name == "FAILED":
             raise RuntimeError(f"Gemini processing failed: {gemini_file.error.message}")
 
-        # 4. Analyze with Super-Prompts
+        # 4. Analyze with Retry Logic
         logging.info(f"🤖 Analyzing with {MODEL_NAME} (Audio + Video)...")
         
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[
-                gemini_file,
-                # This prompt guides the model to use the schema definitions
-                "Watch this video carefully and LISTEN to the audio track. "
-                "Analyze the synchronization between sound and visuals. "
-                "Evaluate the hook, pacing, and overall engagement strategy based on the JSON schema."
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=DeepVideoAnalysis,
-                temperature=0.2 # Low temperature for factual/consistent analysis
-            )
-        )
+        max_retries = 3
+        retry_delay = 5  # Start with 5 seconds
 
-        # 5. Parse Results
-        try:
-            analysis_data = response.parsed
-        except:
-            # Fallback if parsed object isn't automatically created
-            analysis_data = json.loads(response.text)
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=[
+                        gemini_file,
+                        # This prompt guides the model to use the schema definitions
+                        "Watch this video carefully and LISTEN to the audio track. "
+                        "Analyze the synchronization between sound and visuals. "
+                        "Evaluate the hook, pacing, and overall engagement strategy based on the JSON schema."
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=DeepVideoAnalysis,
+                        temperature=0.2 
+                    )
+                )
 
-        return {
-            "status": "success",
-            "video_url": video_url,
-            "data": analysis_data,
-            "model": MODEL_NAME
-        }
+                # 5. Parse Results
+                try:
+                    analysis_data = response.parsed
+                except:
+                    analysis_data = json.loads(response.text)
+
+                return {
+                    "status": "success",
+                    "video_url": video_url,
+                    "data": analysis_data,
+                    "model": MODEL_NAME
+                }
+
+            except ClientError as e:
+                # ✅ FIXED: Catch 429 Rate Limit Errors
+                if "429" in str(e) or getattr(e, 'code', 0) == 429:
+                    if attempt < max_retries - 1:
+                        logging.warning(f"⚠️ Rate Limit Hit (429). Retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        raise e # Give up after retries
+                else:
+                    raise e # Raise other errors immediately
 
     except Exception as e:
         logging.error(f"❌ Analysis failed: {e}")
