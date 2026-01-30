@@ -26,7 +26,7 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.6.0",
+    version="4.6.1",
     description="Stateless Instagram intelligence backend (Gemini 2.0 Flash Video Grader)"
 )
 
@@ -220,9 +220,9 @@ def analyze_reel_grader_api(req: ReelAnalyzeRequest):
         print(f"⬇️ Downloading: {url}")
         video_path = download_video_temp(url)
 
-        # Upload
+        # Upload - ✅ FIXED: Changed `path=` to `file=`
         print("☁️ Uploading to Gemini...")
-        gemini_file = gemini_client.files.upload(path=video_path)
+        gemini_file = gemini_client.files.upload(file=video_path)
         
         # Wait
         print("⏳ Waiting for processing...")
