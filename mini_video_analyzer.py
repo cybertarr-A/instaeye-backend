@@ -8,20 +8,22 @@ from pathlib import Path
 from google import genai
 from supabase import create_client, Client
 
-# --------------------------------------------------
-# Gemini Client
-# --------------------------------------------------
+# ==================================================
+# Gemini Client (FIXED)
+# ==================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-1.5-pro"
 
-# --------------------------------------------------
+# IMPORTANT: fully-qualified model name
+MODEL_NAME = "models/gemini-1.5-pro"
+
+# ==================================================
 # Supabase
-# --------------------------------------------------
+# ==================================================
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -32,9 +34,9 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --------------------------------------------------
-# PROMPT SET (REDUCED TO 3)
-# --------------------------------------------------
+# ==================================================
+# PROMPTS
+# ==================================================
 
 PROMPTS = {
     "visual_summary": (
@@ -52,9 +54,9 @@ PROMPTS = {
     ),
 }
 
-# --------------------------------------------------
+# ==================================================
 # Download video
-# --------------------------------------------------
+# ==================================================
 
 def download_video(video_url: str) -> Path:
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
@@ -70,9 +72,9 @@ def download_video(video_url: str) -> Path:
 
     return Path(tmp_path)
 
-# --------------------------------------------------
+# ==================================================
 # Extract representative frame
-# --------------------------------------------------
+# ==================================================
 
 def extract_frame(video_path: Path) -> Path:
     cap = cv2.VideoCapture(str(video_path))
@@ -95,9 +97,9 @@ def extract_frame(video_path: Path) -> Path:
     cv2.imwrite(str(img_path), frame)
     return img_path
 
-# --------------------------------------------------
+# ==================================================
 # Upload frame to Supabase
-# --------------------------------------------------
+# ==================================================
 
 def upload_frame(image_path: Path) -> str:
     remote_path = f"frames/{uuid.uuid4()}.jpg"
@@ -114,28 +116,28 @@ def upload_frame(image_path: Path) -> str:
         f"{SUPABASE_BUCKET}/{remote_path}"
     )
 
-# --------------------------------------------------
-# Gemini Vision Analysis (CORRECT + SUPPORTED)
-# --------------------------------------------------
+# ==================================================
+# Gemini Vision Analysis (STABLE)
+# ==================================================
 
 def run_prompt(image_url: str, prompt: str) -> str:
-    # 1. Download image bytes from Supabase
+    # 1. Download image bytes
     img_response = requests.get(image_url, timeout=30)
     img_response.raise_for_status()
 
-    # 2. Write to temp file (Gemini REQUIRES file path)
+    # 2. Write to temp file (Gemini requires file path)
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
         tmp_img.write(img_response.content)
         tmp_img_path = tmp_img.name
 
     try:
-        # 3. Upload image file to Gemini
+        # 3. Upload file to Gemini
         uploaded_file = client.files.upload(
             file=tmp_img_path,
             config={"mime_type": "image/jpeg"},
         )
 
-        # 4. Run Gemini multimodal inference
+        # 4. Multimodal inference
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -156,15 +158,18 @@ def run_prompt(image_url: str, prompt: str) -> str:
 
         return response.text.strip()
 
+    except Exception as e:
+        return f"[gemini_error] {str(e)}"
+
     finally:
         try:
             os.unlink(tmp_img_path)
         except OSError:
             pass
 
-# --------------------------------------------------
+# ==================================================
 # MAIN ENTRY
-# --------------------------------------------------
+# ==================================================
 
 def analyze_reel(video_url: str) -> dict:
     video_path = None
