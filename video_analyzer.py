@@ -3,9 +3,11 @@ import cv2
 import uuid
 import requests
 import tempfile
+import time
 from pathlib import Path
 
 from google import genai
+from google.genai import types
 from supabase import create_client, Client
 
 # ==================================================
@@ -18,8 +20,8 @@ if not GEMINI_API_KEY:
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ✅ MUST be fully qualified + vision supported
-MODEL_NAME = "models/gemini-1.5-flash"
+# ✅ FIX: Remove "models/" prefix. The SDK adds this automatically.
+MODEL_NAME = "gemini-1.5-pro"
 
 # ==================================================
 # Supabase
@@ -35,7 +37,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==================================================
-# PROMPTS (IMAGE-ONLY, NO AUDIO HALLUCINATION)
+# PROMPTS
 # ==================================================
 
 PROMPTS = {
@@ -64,25 +66,28 @@ PROMPTS = {
 }
 
 # ==================================================
-# Download video
+# Helper: Download video
 # ==================================================
 
 def download_video(video_url: str) -> Path:
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
 
-    r = requests.get(video_url, stream=True, timeout=60)
-    r.raise_for_status()
-
-    with open(tmp_path, "wb") as f:
-        for chunk in r.iter_content(1024 * 1024):
-            if chunk:
-                f.write(chunk)
-
-    return Path(tmp_path)
+    try:
+        r = requests.get(video_url, stream=True, timeout=60)
+        r.raise_for_status()
+        with open(tmp_path, "wb") as f:
+            for chunk in r.iter_content(1024 * 1024):
+                if chunk:
+                    f.write(chunk)
+        return Path(tmp_path)
+    except Exception as e:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise e
 
 # ==================================================
-# Extract representative frame
+# Helper: Extract representative frame
 # ==================================================
 
 def extract_frame(video_path: Path) -> Path:
@@ -93,6 +98,7 @@ def extract_frame(video_path: Path) -> Path:
         cap.release()
         raise RuntimeError("No frames found in video")
 
+    # Capture frame at ~25% mark to avoid black intro frames
     frame_number = max(1, total_frames // 4)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
 
@@ -107,10 +113,10 @@ def extract_frame(video_path: Path) -> Path:
     return img_path
 
 # ==================================================
-# Upload frame to Supabase
+# Helper: Upload frame to Supabase
 # ==================================================
 
-def upload_frame(image_path: Path) -> str:
+def upload_frame_to_supabase(image_path: Path) -> str:
     remote_path = f"frames/{uuid.uuid4()}.jpg"
 
     with open(image_path, "rb") as f:
@@ -126,69 +132,58 @@ def upload_frame(image_path: Path) -> str:
     )
 
 # ==================================================
-# Gemini Vision Analysis (CORRECT)
-# ==================================================
-
-def run_prompt(image_url: str, prompt: str) -> str:
-    img_response = requests.get(image_url, timeout=30)
-    img_response.raise_for_status()
-
-    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
-        tmp_img.write(img_response.content)
-        tmp_img_path = tmp_img.name
-
-    try:
-        uploaded_file = client.files.upload(
-            file=tmp_img_path,
-            config={"mime_type": "image/jpeg"},
-        )
-
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "file_data": {
-                                "mime_type": "image/jpeg",
-                                "file_uri": uploaded_file.uri,
-                            }
-                        },
-                    ],
-                }
-            ],
-        )
-
-        return response.text.strip()
-
-    except Exception as e:
-        return f"[gemini_error] {str(e)}"
-
-    finally:
-        try:
-            os.unlink(tmp_img_path)
-        except OSError:
-            pass
-
-# ==================================================
 # MAIN ENTRY
 # ==================================================
 
 def analyze_reel(video_url: str) -> dict:
     video_path = None
     frame_path = None
+    gemini_file = None
 
     try:
+        # 1. Download Video
         video_path = download_video(video_url)
+        
+        # 2. Extract Frame
         frame_path = extract_frame(video_path)
-        frame_url = upload_frame(frame_path)
+        
+        # 3. Upload to Supabase (Public URL for your record)
+        frame_url = upload_frame_to_supabase(frame_path)
 
-        results = {
-            key: run_prompt(frame_url, prompt)
-            for key, prompt in PROMPTS.items()
-        }
+        # 4. Upload to Gemini (ONCE)
+        # We upload the local file directly to Gemini to save bandwidth
+        print(f"Uploading frame to Gemini...")
+        gemini_file = client.files.upload(
+            file=frame_path,
+            config={"mime_type": "image/jpeg"}
+        )
+
+        # Wait for file to be ready (usually instant for images, but good practice)
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(1)
+            gemini_file = client.files.get(name=gemini_file.name)
+
+        if gemini_file.state.name == "FAILED":
+            raise RuntimeError("Gemini file upload failed")
+
+        print(f"Gemini File Ready: {gemini_file.name}")
+
+        # 5. Run All Prompts (Re-using the single uploaded file)
+        results = {}
+        for key, prompt_text in PROMPTS.items():
+            try:
+                print(f"Analyzing: {key}...")
+                response = client.models.generate_content(
+                    model=MODEL_NAME,
+                    contents=[
+                        prompt_text, 
+                        gemini_file
+                    ]
+                )
+                results[key] = response.text.strip()
+            except Exception as e:
+                print(f"Error on {key}: {e}")
+                results[key] = f"[gemini_error] {str(e)}"
 
         return {
             "status": "success",
@@ -196,12 +191,38 @@ def analyze_reel(video_url: str) -> dict:
             "frame_url": frame_url,
             "analyses": results,
             "analysis_count": len(results),
-            "method": "multi_prompt_gemini_vision",
+            "method": "multi_prompt_gemini_vision_optimized",
             "model": MODEL_NAME,
         }
 
+    except Exception as e:
+        return {
+            "status": "error",
+            "video_url": video_url,
+            "error": str(e)
+        }
+
     finally:
+        # Cleanup Local Files
         if video_path and video_path.exists():
             video_path.unlink()
         if frame_path and frame_path.exists():
             frame_path.unlink()
+            
+        # Cleanup Gemini File (Save Cloud Storage)
+        if gemini_file:
+            try:
+                client.files.delete(name=gemini_file.name)
+                print("Gemini temporary file deleted.")
+            except Exception:
+                pass
+
+# ==================================================
+# EXAMPLE USAGE
+# ==================================================
+
+if __name__ == "__main__":
+    # Test with a dummy video URL or one provided by your system
+    test_url = "https://www.w3schools.com/html/mov_bbb.mp4" 
+    result = analyze_reel(test_url)
+    print(result)
