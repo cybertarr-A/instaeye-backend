@@ -17,7 +17,7 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.0-flash-exp"
+MODEL_NAME = "gemini-1.5-pro"
 
 # --------------------------------------------------
 # Supabase
