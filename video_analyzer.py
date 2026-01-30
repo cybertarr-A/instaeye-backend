@@ -13,10 +13,9 @@ from supabase import create_client, Client
 from pydantic import BaseModel, Field
 
 # ==================================================
-# 1. Configuration & Clients
+# 1. Configuration
 # ==================================================
 
-# ✅ UPDATED: Using Gemini 2.0 Flash
 MODEL_NAME = "gemini-2.0-flash"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -35,25 +34,53 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==================================================
-# 2. Define Output Structure (Schema)
+# 2. Prompts Dictionary (Your Custom Prompts)
+# ==================================================
+
+PROMPTS = {
+    "visual_summary": (
+        "Describe exactly what is visible in this Instagram Reel frame. "
+        "Mention people, actions, objects, text overlays, and environment. "
+        "Do not infer audio, speech, intent, or emotions."
+    ),
+    "content_category": (
+        "Classify this content based only on visuals into categories such as "
+        "education, promotion, entertainment, lifestyle, meme, or news. "
+        "Explain briefly."
+    ),
+    "promotion_detection": (
+        "Determine whether this content appears promotional or monetized "
+        "based on visible branding, products, logos, or calls to action."
+    ),
+    "hook_analysis": (
+        "Analyze how strong the visual hook is in the opening moment of this frame. "
+        "Explain what would make a viewer stop scrolling."
+    ),
+    "virality_potential": (
+        "Estimate the viral potential based on visuals alone. "
+        "Explain strengths and weaknesses."
+    ),
+}
+
+# ==================================================
+# 3. Output Schema (Mapped to Your Prompts)
 # ==================================================
 
 class ReelAnalysis(BaseModel):
-    visual_summary: str = Field(..., description="Describe exactly what is visible: people, actions, objects, text.")
-    content_category: str = Field(..., description="Classify into: Education, Entertainment, Lifestyle, Promo, etc.")
-    is_promotional: bool = Field(..., description="True if the content appears monetized or sells a product.")
-    hook_strength: str = Field(..., description="Analyze the visual hook. strong/medium/weak and why.")
-    virality_score: int = Field(..., description="Score from 1-10 based on visual appeal.")
+    # We use your exact prompt text as the description for each field
+    visual_summary: str = Field(..., description=PROMPTS["visual_summary"])
+    content_category: str = Field(..., description=PROMPTS["content_category"])
+    promotion_detection: str = Field(..., description=PROMPTS["promotion_detection"])
+    hook_analysis: str = Field(..., description=PROMPTS["hook_analysis"])
+    virality_potential: str = Field(..., description=PROMPTS["virality_potential"])
 
 # ==================================================
-# 3. Helper Functions
+# 4. Helper Functions
 # ==================================================
 
 def download_video(video_url: str) -> Path:
-    """Downloads video to a temp file."""
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
-    
     try:
         r = requests.get(video_url, stream=True, timeout=60)
         r.raise_for_status()
@@ -66,7 +93,6 @@ def download_video(video_url: str) -> Path:
         raise e
 
 def extract_frame(video_path: Path) -> Path:
-    """Extracts a representative frame from the video."""
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -74,7 +100,7 @@ def extract_frame(video_path: Path) -> Path:
         cap.release()
         raise RuntimeError("No frames found in video")
 
-    # Capture at 20% to avoid black intro frames
+    # Capture at 20% mark
     frame_number = max(1, int(total_frames * 0.2))
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
     success, frame = cap.read()
@@ -88,7 +114,6 @@ def extract_frame(video_path: Path) -> Path:
     return img_path
 
 def upload_frame_to_supabase(image_path: Path) -> str:
-    """Uploads the extracted frame to Supabase Storage."""
     remote_path = f"frames/{uuid.uuid4()}.jpg"
     with open(image_path, "rb") as f:
         supabase.storage.from_(SUPABASE_BUCKET).upload(
@@ -99,7 +124,7 @@ def upload_frame_to_supabase(image_path: Path) -> str:
     return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{remote_path}"
 
 # ==================================================
-# 4. Main Analysis Logic
+# 5. Main Logic
 # ==================================================
 
 def analyze_reel(video_url: str) -> dict:
@@ -109,33 +134,28 @@ def analyze_reel(video_url: str) -> dict:
     try:
         print(f"⬇️ Downloading: {video_url}...")
         video_path = download_video(video_url)
-        
-        print("📸 Extracting frame...")
         frame_path = extract_frame(video_path)
-        
-        print("☁️ Uploading frame to Supabase...")
         frame_url = upload_frame_to_supabase(frame_path)
 
-        # Read image bytes for Gemini
         with open(frame_path, "rb") as f:
             image_bytes = f.read()
 
         print(f"🤖 Analyzing with Gemini ({MODEL_NAME})...")
         
+        # We send one request, but the Schema ensures all 5 prompts are answered
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
                 types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                "Analyze this Instagram Reel frame. Be specific and concise."
+                "Analyze this image frame according to the defined schema instructions."
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ReelAnalysis, # Enforces the Pydantic schema
+                response_schema=ReelAnalysis, 
                 temperature=0.2
             )
         )
 
-        # Parse the result
         try:
             analysis_data = response.parsed
         except:
@@ -151,36 +171,21 @@ def analyze_reel(video_url: str) -> dict:
 
     except Exception as e:
         print(f"❌ Error: {e}")
-        return {
-            "status": "error",
-            "video_url": video_url,
-            "error": str(e)
-        }
+        return {"status": "error", "error": str(e)}
 
     finally:
-        # Cleanup
         if video_path and video_path.exists(): video_path.unlink()
         if frame_path and frame_path.exists(): frame_path.unlink()
 
-# ==================================================
-# Execution
-# ==================================================
-
 if __name__ == "__main__":
-    # Test Video
     test_url = "https://www.w3schools.com/html/mov_bbb.mp4"
-    
     result = analyze_reel(test_url)
     
-    # Pretty print the output
-    print("\n--- FINAL RESULT ---")
+    print("\n--- GEMINI ANALYSIS ---")
     if result["status"] == "success":
-        # Convert Pydantic object to dict for printing if necessary
+        # Dump using Pydantic's model_dump if available, else standard json
         data = result["data"]
-        if hasattr(data, "model_dump"):
-            print(json.dumps(data.model_dump(), indent=2))
-        else:
-            print(json.dumps(data, indent=2))
-        print(f"\nFrame Reference: {result['frame_url']}")
+        output_dict = data.model_dump() if hasattr(data, "model_dump") else data
+        print(json.dumps(output_dict, indent=2))
     else:
         print(result)
