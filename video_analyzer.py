@@ -8,20 +8,22 @@ from pathlib import Path
 from google import genai
 from supabase import create_client, Client
 
-# --------------------------------------------------
-# Gemini Client (OFFICIAL SDK)
-# --------------------------------------------------
+# ==================================================
+# Gemini Client (STABLE + SUPPORTED)
+# ==================================================
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not set")
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.0-flash-exp"
 
-# --------------------------------------------------
+# ✅ MUST be fully qualified + vision supported
+MODEL_NAME = "models/gemini-1.5-flash"
+
+# ==================================================
 # Supabase
-# --------------------------------------------------
+# ==================================================
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -32,53 +34,56 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --------------------------------------------------
-# PROMPT SET
-# --------------------------------------------------
+# ==================================================
+# PROMPTS (IMAGE-ONLY, NO AUDIO HALLUCINATION)
+# ==================================================
 
 PROMPTS = {
     "visual_summary": (
         "Describe exactly what is visible in this Instagram Reel frame. "
-        "Pay attention to what the audio of the video is and what is being said and how that relates to the content of the video"
-        "Do not infer intent."
+        "Mention people, actions, objects, text overlays, and environment. "
+        "Do not infer audio, speech, intent, or emotions."
     ),
     "content_category": (
-        "Classify this content into categories such as education, promotion, "
-        "entertainment, lifestyle, meme, or news. Explain briefly."
+        "Classify this content based only on visuals into categories such as "
+        "education, promotion, entertainment, lifestyle, meme, or news. "
+        "Explain briefly."
     ),
     "promotion_detection": (
-        "Determine whether this content appears promotional or monetized. "
-        "Look for branding, products, calls to action, or logos."
+        "Determine whether this content appears promotional or monetized "
+        "based on visible branding, products, logos, or calls to action."
     ),
     "hook_analysis": (
-        "Analyze how strong the visual hook is in the first few seconds. "
-        "Explain what makes a viewer stop scrolling."
+        "Analyze how strong the visual hook is in the opening moment of this frame. "
+        "Explain what would make a viewer stop scrolling."
     ),
     "virality_potential": (
-        "Estimate the viral potential of this reel based on visuals alone. "
+        "Estimate the viral potential based on visuals alone. "
         "Explain strengths and weaknesses."
     ),
 }
 
-# --------------------------------------------------
+# ==================================================
 # Download video
-# --------------------------------------------------
+# ==================================================
 
 def download_video(video_url: str) -> Path:
-    tmp = Path(tempfile.mkstemp(suffix=".mp4")[1])
+    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+
     r = requests.get(video_url, stream=True, timeout=60)
     r.raise_for_status()
 
-    with open(tmp, "wb") as f:
+    with open(tmp_path, "wb") as f:
         for chunk in r.iter_content(1024 * 1024):
             if chunk:
                 f.write(chunk)
 
-    return tmp
+    return Path(tmp_path)
 
-# --------------------------------------------------
+# ==================================================
 # Extract representative frame
-# --------------------------------------------------
+# ==================================================
 
 def extract_frame(video_path: Path) -> Path:
     cap = cv2.VideoCapture(str(video_path))
@@ -101,9 +106,9 @@ def extract_frame(video_path: Path) -> Path:
     cv2.imwrite(str(img_path), frame)
     return img_path
 
-# --------------------------------------------------
+# ==================================================
 # Upload frame to Supabase
-# --------------------------------------------------
+# ==================================================
 
 def upload_frame(image_path: Path) -> str:
     remote_path = f"frames/{uuid.uuid4()}.jpg"
@@ -120,28 +125,24 @@ def upload_frame(image_path: Path) -> str:
         f"{SUPABASE_BUCKET}/{remote_path}"
     )
 
-# --------------------------------------------------
-# Gemini Vision Analysis (CORRECT IMPLEMENTATION)
-# --------------------------------------------------
+# ==================================================
+# Gemini Vision Analysis (CORRECT)
+# ==================================================
 
 def run_prompt(image_url: str, prompt: str) -> str:
-    # 1. Download image from Supabase
     img_response = requests.get(image_url, timeout=30)
     img_response.raise_for_status()
 
-    # 2. Save to temporary file (Gemini requires file path)
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp_img:
         tmp_img.write(img_response.content)
         tmp_img_path = tmp_img.name
 
     try:
-        # 3. Upload file to Gemini
         uploaded_file = client.files.upload(
             file=tmp_img_path,
             config={"mime_type": "image/jpeg"},
         )
 
-        # 4. Run Gemini multimodal inference
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
@@ -162,16 +163,18 @@ def run_prompt(image_url: str, prompt: str) -> str:
 
         return response.text.strip()
 
+    except Exception as e:
+        return f"[gemini_error] {str(e)}"
+
     finally:
-        # 5. Cleanup temp file
         try:
             os.unlink(tmp_img_path)
         except OSError:
             pass
 
-# --------------------------------------------------
+# ==================================================
 # MAIN ENTRY
-# --------------------------------------------------
+# ==================================================
 
 def analyze_reel(video_url: str) -> dict:
     video_path = None
@@ -182,9 +185,10 @@ def analyze_reel(video_url: str) -> dict:
         frame_path = extract_frame(video_path)
         frame_url = upload_frame(frame_path)
 
-        results = {}
-        for key, prompt in PROMPTS.items():
-            results[key] = run_prompt(frame_url, prompt)
+        results = {
+            key: run_prompt(frame_url, prompt)
+            for key, prompt in PROMPTS.items()
+        }
 
         return {
             "status": "success",
