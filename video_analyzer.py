@@ -5,62 +5,161 @@ import logging
 import tempfile
 import requests
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Dict, Any, List
 
 from google import genai
 from google.genai import types
-from google.genai.errors import ClientError # Import for error handling
+from google.genai.errors import ClientError
 from pydantic import BaseModel, Field
 
 # ============================
 # CONFIGURATION
 # ============================
 
-# ✅ Gemini 2.0 Flash is multimodal (Video + Audio)
 MODEL_NAME = "gemini-2.0-flash"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    logging.error("GEMINI_API_KEY is not set. Video analysis will fail.")
+    logging.error("GEMINI_API_KEY is not set")
 
-try:
-    client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-except Exception as e:
-    logging.error(f"Failed to initialize Gemini Client: {e}")
-    client = None
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # ============================
-# SUPER-PROMPTS (SCHEMA)
+# AUDIO + VIDEO INTELLIGENCE SCHEMA
 # ============================
 
 class DeepVideoAnalysis(BaseModel):
-    # 1. Visual Analysis
-    visual_hook_analysis: str = Field(..., description="Analyze the first 3 seconds (The Hook). Describe the visual movement, text overlays, or unexpected action that grabs attention. Is it a 'pattern interrupt'?")
-    visual_pacing: str = Field(..., description="Describe the editing speed. Is it fast-paced (TikTok style) with quick cuts, or slow and cinematic? Does the visual pacing match the energy of the content?")
-    
-    # 2. Audio Analysis (New & Critical)
-    audio_type: str = Field(..., description="Classify the audio: Trending Music, Original Voiceover, ASMR/Sound Effects, or Silence. Is the audio clear and high quality?")
-    audio_engagement: str = Field(..., description="Listen closely. Does the audio 'beat' sync with the visual transitions? If there is a voiceover, is the tone energetic, calm, or robotic? How does the sound add emotional value?")
-    
-    # 3. Content Strategy
-    content_purpose: str = Field(..., description="What is the goal? Education (How-to), Entertainment (Comedy/Skits), Inspiration, or Sales (Promo)? Who is the target audience?")
-    call_to_action_detected: str = Field(..., description="Is there a specific Call to Action (CTA)? Examples: 'Link in bio', 'Follow for more', 'Read caption'. If none, is there an implied engagement bait?")
-    
-    # 4. Scoring & Improvement
-    virality_score: int = Field(..., description="Score from 1-10 based on the 'Stop-Scroll' potential. High scores require strong hooks and high retention.")
-    improvement_tip: str = Field(..., description="Provide ONE specific, actionable tip to improve this video. Examples: 'Add captions for silent viewers', 'Cut the dead air at 0:05', 'Use a trending audio track'.")
+    # 1. AUDIO TIMELINE (PRIMARY)
+    audio_timeline_summary: str = Field(
+        ...,
+        description=(
+            "Chronologically summarize the AUDIO from start to end. "
+            "Break into logical segments (intro, middle, ending). "
+            "For each segment describe what is being said or heard, "
+            "the tone/emotion, and the purpose (hook, explanation, CTA)."
+        )
+    )
+
+    spoken_content_summary: str = Field(
+        ...,
+        description=(
+            "Summarize what people are SAYING in the video. "
+            "Capture the core spoken message clearly and concisely."
+        )
+    )
+
+    key_spoken_phrases: List[str] = Field(
+        ...,
+        description=(
+            "List the most important spoken phrases, commands, or sentences "
+            "that stand out or are repeated."
+        )
+    )
+
+    audio_hook_analysis: str = Field(
+        ...,
+        description=(
+            "Analyze the FIRST 3 SECONDS of AUDIO. "
+            "What is heard immediately? "
+            "Explain why this does or does not stop scrolling."
+        )
+    )
+
+    audio_quality: str = Field(
+        ...,
+        description=(
+            "Evaluate audio clarity and quality. "
+            "Consider mic quality, loudness balance, background noise, compression, and distortion."
+        )
+    )
+
+    emotional_audio_impact: str = Field(
+        ...,
+        description=(
+            "Describe the emotional journey conveyed through audio over time. "
+            "Note any shifts in emotion."
+        )
+    )
+
+    # 2. VIDEO TIMELINE (SECONDARY BUT DETAILED)
+    video_timeline_summary: str = Field(
+        ...,
+        description=(
+            "Chronologically summarize the VISUALS from start to end. "
+            "Describe major scene changes, actions, text overlays, transitions, "
+            "and visual pacing."
+        )
+    )
+
+    visual_hook_analysis: str = Field(
+        ...,
+        description=(
+            "Analyze the FIRST 3 SECONDS of VISUALS. "
+            "Describe movement, framing, text, or pattern interrupts."
+        )
+    )
+
+    visual_pacing: str = Field(
+        ...,
+        description=(
+            "Describe the visual pacing. "
+            "Is it fast-cut, moderate, or slow? "
+            "Does pacing support retention?"
+        )
+    )
+
+    # 3. AUDIO ↔ VIDEO RELATIONSHIP
+    audio_visual_sync: str = Field(
+        ...,
+        description=(
+            "Explain how audio and visuals work together. "
+            "Are spoken words or beats synchronized with cuts, captions, or actions?"
+        )
+    )
+
+    # 4. STRATEGY & ENGAGEMENT
+    content_purpose: str = Field(
+        ...,
+        description=(
+            "Identify the primary goal of the content: educate, entertain, persuade, motivate, or sell."
+        )
+    )
+
+    call_to_action_detected: str = Field(
+        ...,
+        description=(
+            "Identify any spoken or visual Call to Action. "
+            "Examples: follow, comment, like, buy, watch till end."
+        )
+    )
+
+    # 5. SCORING & IMPROVEMENT
+    retention_score: int = Field(
+        ...,
+        description=(
+            "Score from 1–10 based on overall retention potential. "
+            "Consider audio hook strength, clarity, emotion, visual pacing, and sync."
+        )
+    )
+
+    improvement_tip: str = Field(
+        ...,
+        description=(
+            "Provide ONE specific, high-impact improvement tip. "
+            "Can be audio-focused, visual-focused, or sync-focused."
+        )
+    )
 
 # ============================
 # HELPER FUNCTIONS
 # ============================
 
 def download_video_temp(video_url: str) -> Path:
-    """Downloads video to a temporary file."""
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
-    
+
     try:
-        logging.info(f"⬇️ Downloading video from: {video_url}")
+        logging.info(f"⬇️ Downloading video: {video_url}")
         with requests.get(video_url, stream=True, timeout=60) as r:
             r.raise_for_status()
             with open(tmp_path, "wb") as f:
@@ -70,116 +169,101 @@ def download_video_temp(video_url: str) -> Path:
     except Exception as e:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        raise RuntimeError(f"Failed to download video: {e}")
+        raise RuntimeError(f"Video download failed: {e}")
 
 # ============================
-# MAIN ANALYZER FUNCTION
+# MAIN ANALYZER
 # ============================
 
 def analyze_reel(video_url: str) -> Dict[str, Any]:
-    """
-    Performs a full deep-dive analysis of an Instagram Reel or TikTok video.
-    Uploads the file to Gemini 2.0 Flash for native video+audio understanding.
-    """
     video_path = None
     gemini_file = None
 
     if not client:
-        return {"status": "error", "message": "Gemini API Key missing"}
+        return {"status": "error", "message": "Gemini client not initialized"}
 
     try:
-        # 1. Download Video
+        # 1. Download video
         video_path = download_video_temp(video_url)
 
-        # 2. Upload to Gemini (Native Video Support)
-        logging.info("☁️ Uploading video to Gemini...")
-        
-        # ✅ FIXED: 'file=' is the correct argument
+        # 2. Upload to Gemini
+        logging.info("☁️ Uploading to Gemini...")
         gemini_file = client.files.upload(file=video_path)
-        
-        # 3. Poll for Processing
-        logging.info(f"⏳ Waiting for video processing (URI: {gemini_file.uri})...")
+
+        # 3. Poll for processing (every 2s)
+        logging.info("⏳ Waiting for Gemini processing...")
         while gemini_file.state.name == "PROCESSING":
-            time.sleep(1)
+            time.sleep(2)
             gemini_file = client.files.get(name=gemini_file.name)
-        
+
         if gemini_file.state.name == "FAILED":
-            raise RuntimeError(f"Gemini processing failed: {gemini_file.error.message}")
+            raise RuntimeError(gemini_file.error.message)
 
-        # 4. Analyze with Retry Logic
-        logging.info(f"🤖 Analyzing with {MODEL_NAME} (Audio + Video)...")
-        
-        max_retries = 3
-        retry_delay = 5  # Start with 5 seconds
-
-        for attempt in range(max_retries):
-            try:
-                response = client.models.generate_content(
-                    model=MODEL_NAME,
-                    contents=[
-                        gemini_file,
-                        # This prompt guides the model to use the schema definitions
-                        "Watch this video carefully and LISTEN to the audio track. "
-                        "Analyze the synchronization between sound and visuals. "
-                        "Evaluate the hook, pacing, and overall engagement strategy based on the JSON schema."
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=DeepVideoAnalysis,
-                        temperature=0.2 
-                    )
+        # 4. AUDIO + VIDEO ANALYSIS
+        logging.info("🎧🎥 Running multimodal analysis...")
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[
+                gemini_file,
+                (
+                    "LISTEN to the AUDIO carefully before analyzing visuals.\n\n"
+                    "First:\n"
+                    "- Understand what is being spoken\n"
+                    "- Break audio into chronological segments\n"
+                    "- Summarize meaning, tone, emotion, and intent\n\n"
+                    "Then:\n"
+                    "- Analyze visuals over time\n"
+                    "- Describe hooks, pacing, scene changes, and text\n\n"
+                    "Finally:\n"
+                    "- Evaluate how audio and visuals work together\n"
+                    "- Judge retention and engagement potential\n\n"
+                    "Do NOT transcribe word-for-word.\n"
+                    "Summarize intelligently.\n\n"
+                    "Respond strictly using the provided JSON schema."
                 )
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=DeepVideoAnalysis,
+                temperature=0.2
+            )
+        )
 
-                # 5. Parse Results
-                try:
-                    analysis_data = response.parsed
-                except:
-                    analysis_data = json.loads(response.text)
+        analysis_data = response.parsed or json.loads(response.text)
 
-                return {
-                    "status": "success",
-                    "video_url": video_url,
-                    "data": analysis_data,
-                    "model": MODEL_NAME
-                }
-
-            except ClientError as e:
-                # ✅ FIXED: Catch 429 Rate Limit Errors
-                if "429" in str(e) or getattr(e, 'code', 0) == 429:
-                    if attempt < max_retries - 1:
-                        logging.warning(f"⚠️ Rate Limit Hit (429). Retrying in {retry_delay}s...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        raise e # Give up after retries
-                else:
-                    raise e # Raise other errors immediately
-
-    except Exception as e:
-        logging.error(f"❌ Analysis failed: {e}")
         return {
-            "status": "error",
-            "message": str(e),
-            "trace": "See logs for details"
+            "status": "success",
+            "video_url": video_url,
+            "model": MODEL_NAME,
+            "data": analysis_data
         }
 
+    except ClientError as e:
+        return {"status": "error", "message": str(e)}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
     finally:
-        # 6. Cleanup (Crucial for cost/storage management)
+        # Cleanup local file
         if video_path and video_path.exists():
             try:
                 video_path.unlink()
             except Exception:
                 pass
-                
+
+        # Cleanup Gemini cloud file
         if gemini_file:
             try:
                 client.files.delete(name=gemini_file.name)
-                logging.info("🧹 Gemini cloud file deleted")
             except Exception:
                 pass
 
+# ============================
+# LOCAL TEST
+# ============================
+
 if __name__ == "__main__":
-    # Local Test
     test_url = "https://www.w3schools.com/html/mov_bbb.mp4"
     result = analyze_reel(test_url)
     print(json.dumps(result, indent=2, default=str))
