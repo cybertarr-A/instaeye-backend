@@ -1,168 +1,169 @@
 import os
-import cv2
-import uuid
-import requests
-import tempfile
+import time
 import json
-import uvicorn
+import logging
+import tempfile
+import requests
 from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
+
 from google import genai
 from google.genai import types
-from supabase import create_client, Client
+from pydantic import BaseModel, Field
 
-# ==================================================
+# ============================
 # CONFIGURATION
-# ==================================================
+# ============================
 
-app = FastAPI()
-
-# Railway automatically sets the PORT env var, but we default to 8000
-PORT = int(os.getenv("PORT", 8000))
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "temp-media")
-
-# Validation
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is not set!")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Supabase credentials missing!")
-
-client = genai.Client(api_key=GEMINI_API_KEY)
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# ✅ Gemini 2.0 Flash is multimodal (Video + Audio)
 MODEL_NAME = "gemini-2.0-flash"
 
-# ==================================================
-# DATA MODELS
-# ==================================================
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    logging.error("GEMINI_API_KEY is not set. Video analysis will fail.")
 
-class VideoRequest(BaseModel):
-    video_url: str
+try:
+    client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+except Exception as e:
+    logging.error(f"Failed to initialize Gemini Client: {e}")
+    client = None
 
-class ReelAnalysis(BaseModel):
-    visual_summary: str = Field(..., description="Describe exactly what is visible in the video.")
-    content_category: str = Field(..., description="Classify content: Education, Entertainment, etc.")
-    promotion_detection: str = Field(..., description="Is this promotional? Mention brands/logos.")
-    hook_analysis: str = Field(..., description="Analyze the visual hook strength.")
-    virality_potential: str = Field(..., description="Estimate viral potential (High/Medium/Low).")
+# ============================
+# SUPER-PROMPTS (SCHEMA)
+# ============================
+# This schema acts as the prompt. Gemini 2.0 follows these descriptions instructions.
 
-# ==================================================
+class DeepVideoAnalysis(BaseModel):
+    # 1. Visual Analysis
+    visual_hook_analysis: str = Field(..., description="Analyze the first 3 seconds (The Hook). Describe the visual movement, text overlays, or unexpected action that grabs attention. Is it a 'pattern interrupt'?")
+    visual_pacing: str = Field(..., description="Describe the editing speed. Is it fast-paced (TikTok style) with quick cuts, or slow and cinematic? Does the visual pacing match the energy of the content?")
+    
+    # 2. Audio Analysis (New & Critical)
+    audio_type: str = Field(..., description="Classify the audio: Trending Music, Original Voiceover, ASMR/Sound Effects, or Silence. Is the audio clear and high quality?")
+    audio_engagement: str = Field(..., description="Listen closely. Does the audio 'beat' sync with the visual transitions? If there is a voiceover, is the tone energetic, calm, or robotic? How does the sound add emotional value?")
+    
+    # 3. Content Strategy
+    content_purpose: str = Field(..., description="What is the goal? Education (How-to), Entertainment (Comedy/Skits), Inspiration, or Sales (Promo)? Who is the target audience?")
+    call_to_action_detected: str = Field(..., description="Is there a specific Call to Action (CTA)? Examples: 'Link in bio', 'Follow for more', 'Read caption'. If none, is there an implied engagement bait?")
+    
+    # 4. Scoring & Improvement
+    virality_score: int = Field(..., description="Score from 1-10 based on the 'Stop-Scroll' potential. High scores require strong hooks and high retention.")
+    improvement_tip: str = Field(..., description="Provide ONE specific, actionable tip to improve this video. Examples: 'Add captions for silent viewers', 'Cut the dead air at 0:05', 'Use a trending audio track'.")
+
+# ============================
 # HELPER FUNCTIONS
-# ==================================================
+# ============================
 
-def download_video(video_url: str) -> Path:
+def download_video_temp(video_url: str) -> Path:
+    """Downloads video to a temporary file."""
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
+    
     try:
-        r = requests.get(video_url, stream=True, timeout=60)
-        r.raise_for_status()
-        with open(tmp_path, "wb") as f:
-            for chunk in r.iter_content(1024 * 1024):
-                if chunk: f.write(chunk)
+        logging.info(f"⬇️ Downloading video from: {video_url}")
+        with requests.get(video_url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
         return Path(tmp_path)
     except Exception as e:
-        if os.path.exists(tmp_path): os.unlink(tmp_path)
-        raise e
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise RuntimeError(f"Failed to download video: {e}")
 
-def extract_frame(video_path: Path) -> Path:
-    """Extracts a frame at 20% mark."""
-    cap = cv2.VideoCapture(str(video_path))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    if total_frames <= 0:
-        cap.release()
-        raise ValueError("Video seems empty or corrupted.")
-        
-    cap.set(cv2.CAP_PROP_POS_FRAMES, max(1, int(total_frames * 0.2)))
-    success, frame = cap.read()
-    cap.release()
-    
-    if not success:
-        raise ValueError("Could not read frame from video.")
-        
-    img_path = video_path.with_suffix(".jpg")
-    cv2.imwrite(str(img_path), frame)
-    return img_path
+# ============================
+# MAIN ANALYZER FUNCTION
+# ============================
 
-def upload_to_supabase(image_path: Path) -> str:
-    remote_path = f"frames/{uuid.uuid4()}.jpg"
-    with open(image_path, "rb") as f:
-        supabase.storage.from_(SUPABASE_BUCKET).upload(
-            remote_path, f, {"content-type": "image/jpeg"}
-        )
-    return f"{SUPABASE_URL}/storage/v1/object/public/{SUPABASE_BUCKET}/{remote_path}"
-
-# ==================================================
-# API ENDPOINTS
-# ==================================================
-
-@app.get("/")
-def health_check():
-    return {"status": "active", "service": "InstaEye Backend"}
-
-@app.post("/analyze")
-def analyze_reel_endpoint(request: VideoRequest):
+def analyze_reel(video_url: str) -> Dict[str, Any]:
     """
-    Endpoint for n8n to call.
-    Body: { "video_url": "https://..." }
+    Performs a full deep-dive analysis of an Instagram Reel or TikTok video.
+    Uploads the file to Gemini 2.0 Flash for native video+audio understanding.
     """
     video_path = None
-    frame_path = None
-    
+    gemini_file = None
+
+    if not client:
+        return {"status": "error", "message": "Gemini API Key missing"}
+
     try:
-        print(f"Processing: {request.video_url}")
+        # 1. Download Video
+        video_path = download_video_temp(video_url)
+
+        # 2. Upload to Gemini (Native Video Support)
+        logging.info("☁️ Uploading video to Gemini...")
         
-        # 1. Download & Process
-        video_path = download_video(request.video_url)
-        frame_path = extract_frame(video_path)
-        frame_url = upload_to_supabase(frame_path)
+        # 'file=' is the correct argument for the new SDK
+        gemini_file = client.files.upload(file=video_path)
         
-        # 2. Analyze with Gemini
-        with open(frame_path, "rb") as f:
-            image_bytes = f.read()
-            
+        # 3. Poll for Processing
+        logging.info(f"⏳ Waiting for video processing (URI: {gemini_file.uri})...")
+        while gemini_file.state.name == "PROCESSING":
+            time.sleep(1)
+            gemini_file = client.files.get(name=gemini_file.name)
+        
+        if gemini_file.state.name == "FAILED":
+            raise RuntimeError(f"Gemini processing failed: {gemini_file.error.message}")
+
+        # 4. Analyze with Super-Prompts
+        logging.info(f"🤖 Analyzing with {MODEL_NAME} (Audio + Video)...")
+        
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
-                "Analyze this Instagram Reel frame based on the schema."
+                gemini_file,
+                # This prompt guides the model to use the schema definitions
+                "Watch this video carefully and LISTEN to the audio track. "
+                "Analyze the synchronization between sound and visuals. "
+                "Evaluate the hook, pacing, and overall engagement strategy based on the JSON schema."
             ],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=ReelAnalysis,
-                temperature=0.2
+                response_schema=DeepVideoAnalysis,
+                temperature=0.2 # Low temperature for factual/consistent analysis
             )
         )
-        
-        # 3. Parse Response
+
+        # 5. Parse Results
         try:
-            # Try parsing using the SDK's typed object first
-            analysis = response.parsed
+            analysis_data = response.parsed
         except:
-            # Fallback to standard JSON load
-            analysis = json.loads(response.text)
+            # Fallback if parsed object isn't automatically created
+            analysis_data = json.loads(response.text)
 
         return {
             "status": "success",
-            "frame_url": frame_url,
-            "analysis": analysis
+            "video_url": video_url,
+            "data": analysis_data,
+            "model": MODEL_NAME
         }
 
     except Exception as e:
-        print(f"Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"❌ Analysis failed: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "trace": "See logs for details"
+        }
 
     finally:
-        # Cleanup temp files
-        if video_path and video_path.exists(): video_path.unlink()
-        if frame_path and frame_path.exists(): frame_path.unlink()
-
-# ==================================================
-# RAILWAY ENTRY POINT
-# ==================================================
+        # 6. Cleanup (Crucial for cost/storage management)
+        if video_path and video_path.exists():
+            try:
+                video_path.unlink()
+            except Exception:
+                pass
+                
+        if gemini_file:
+            try:
+                client.files.delete(name=gemini_file.name)
+                logging.info("🧹 Gemini cloud file deleted")
+            except Exception:
+                pass
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+    # Local Test
+    test_url = "https://www.w3schools.com/html/mov_bbb.mp4"
+    result = analyze_reel(test_url)
+    print(json.dumps(result, indent=2, default=str))
