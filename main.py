@@ -9,72 +9,81 @@ from typing import Optional, List
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from google import genai
 from google.genai import types
 
-# ============================
+# ======================================================
 # APP INIT
-# ============================
+# ======================================================
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.8.0",
-    description="Instagram AI Video Grader (Gemini 2.0 Flash – Audio + Video)"
+    version="5.0.0",
+    description="Unified API Gateway for InstaEye AI System"
 )
 
-# ============================
-# CONFIGURATION
-# ============================
+# ======================================================
+# CONFIG
+# ======================================================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-2.0-flash"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 if not GEMINI_API_KEY:
     logging.error("GEMINI_API_KEY not set")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-# ============================
+# ======================================================
 # HELPERS
-# ============================
+# ======================================================
 
 def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
 def download_video_temp(video_url: str) -> Path:
-    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
+    fd, tmp = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
-
     try:
         with requests.get(video_url, stream=True, timeout=60) as r:
             r.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(8192):
                     f.write(chunk)
-        return Path(tmp_path)
+        return Path(tmp)
     except Exception as e:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise RuntimeError(f"Video download failed: {e}")
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise RuntimeError(f"Download failed: {e}")
 
-# ============================
+# ======================================================
 # REQUEST MODELS
-# ============================
+# ======================================================
 
-class ReelAnalyzeRequest(BaseModel):
+class VideoRequest(BaseModel):
     video_url: Optional[str] = None
     media_url: Optional[str] = None
     url: Optional[str] = None
 
-def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
+class ImageRequest(BaseModel):
+    image_url: str
+
+class IndustryRequest(BaseModel):
+    keywords: List[str]
+
+class ContentIdeaRequest(BaseModel):
+    analysis_data: dict
+    brand_tone: Optional[str] = None
+
+def extract_url(req: VideoRequest) -> str:
     return req.video_url or req.media_url or req.url
 
-# ============================
-# RESPONSE SCHEMA
-# ============================
+# ======================================================
+# RESPONSE SCHEMAS
+# ======================================================
 
 class VideoGradeAV(BaseModel):
     audio_timeline_summary: str
@@ -83,53 +92,30 @@ class VideoGradeAV(BaseModel):
     audio_hook_analysis: str
     audio_quality: str
     emotional_audio_impact: str
-
     video_timeline_summary: str
     visual_hook_analysis: str
     visual_pacing: str
-
     audio_visual_sync: str
     content_purpose: str
     call_to_action_detected: str
-
     retention_score: int
     improvement_tip: str
 
-# ============================
-# BASIC ROUTES
-# ============================
+# ======================================================
+# CORE ANALYSIS FUNCTIONS (SHARED)
+# ======================================================
 
-@app.get("/")
-def root():
-    return {
-        "status": "ok",
-        "service": "InstaEye Backend",
-        "model": MODEL_NAME
-    }
-
-@app.get("/health")
-def health():
-    return {"status": "healthy"}
-
-# ============================
-# CORE ANALYSIS LOGIC
-# ============================
-
-def run_reel_analysis(url: str):
+def run_video_analysis(url: str, mode: str):
     video_path = None
     gemini_file = None
 
     if not gemini_client:
-        raise HTTPException(status_code=500, detail="Gemini client not initialized")
+        raise HTTPException(500, "Gemini not initialized")
 
     try:
-        # Download
         video_path = download_video_temp(url)
-
-        # Upload
         gemini_file = gemini_client.files.upload(file=video_path)
 
-        # Wait for processing
         while gemini_file.state.name == "PROCESSING":
             time.sleep(2)
             gemini_file = gemini_client.files.get(name=gemini_file.name)
@@ -137,36 +123,18 @@ def run_reel_analysis(url: str):
         if gemini_file.state.name == "FAILED":
             raise RuntimeError(gemini_file.error.message)
 
-        # Gemini analysis
+        PROMPTS = {
+            "grade": "AUDIO FIRST. Grade retention, hook, pacing. Return JSON.",
+            "deep": "Deep audio-first analysis. What are people saying? Why it works. JSON.",
+            "mini": "Fast hook-only analysis. First 5 seconds. JSON."
+        }
+
         response = gemini_client.models.generate_content(
             model=MODEL_NAME,
-            contents=[
-                gemini_file,
-                (
-                    "AUDIO IS PRIMARY.\n\n"
-                    "Analyze the video as follows:\n\n"
-                    "AUDIO:\n"
-                    "- Break audio into intro, middle, end\n"
-                    "- Summarize what people are saying (paraphrased)\n"
-                    "- Identify key spoken phrases\n"
-                    "- Analyze first 3 seconds as audio hook\n"
-                    "- Describe emotional delivery\n\n"
-                    "VIDEO:\n"
-                    "- Summarize visuals over time\n"
-                    "- Analyze first 3 seconds visually\n"
-                    "- Describe pacing and editing\n\n"
-                    "STRATEGY:\n"
-                    "- Explain audio-visual sync\n"
-                    "- Identify content purpose and CTA\n"
-                    "- Score retention from 1–10\n"
-                    "- Give one improvement tip\n\n"
-                    "Do NOT transcribe word-for-word.\n"
-                    "Respond ONLY in valid JSON."
-                )
-            ],
+            contents=[gemini_file, PROMPTS[mode]],
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
-                response_schema=VideoGradeAV,
+                response_schema=VideoGradeAV if mode == "grade" else None,
                 temperature=0.2
             )
         )
@@ -175,44 +143,90 @@ def run_reel_analysis(url: str):
 
     finally:
         if video_path and video_path.exists():
-            try:
-                video_path.unlink()
-            except:
-                pass
-
+            video_path.unlink(missing_ok=True)
         if gemini_file:
-            try:
-                gemini_client.files.delete(name=gemini_file.name)
-            except:
-                pass
+            gemini_client.files.delete(name=gemini_file.name)
 
-# ============================
-# PRIMARY ENDPOINT
-# ============================
+# ======================================================
+# BASE ROUTES
+# ======================================================
+
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "InstaEye"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+# ======================================================
+# VIDEO ENDPOINTS
+# ======================================================
 
 @app.post("/analyze/reel/grade")
-def analyze_reel_grade(req: ReelAnalyzeRequest):
-    raw_url = extract_any_url(req)
-    if not raw_url:
-        raise HTTPException(status_code=400, detail="No video URL provided")
-
-    url = normalize_url(raw_url)
-    data = run_reel_analysis(url)
-
-    return {
-        "status": "success",
-        "video_url": url,
-        "model": MODEL_NAME,
-        "data": data
-    }
-
-# ============================
-# 🔁 BACKWARD-COMPAT ALIAS ROUTES
-# ============================
+def reel_grade(req: VideoRequest):
+    url = extract_url(req)
+    if not url:
+        raise HTTPException(400, "Missing video URL")
+    return run_video_analysis(normalize_url(url), "grade")
 
 @app.post("/analyze/reel")
-@app.post("/analyze/video")
-@app.post("/analyze-reel/grade")
+def reel_deep(req: VideoRequest):
+    url = extract_url(req)
+    if not url:
+        raise HTTPException(400, "Missing video URL")
+    return run_video_analysis(normalize_url(url), "deep")
+
+@app.post("/analyze/reel/mini")
+def reel_mini(req: VideoRequest):
+    url = extract_url(req)
+    if not url:
+        raise HTTPException(400, "Missing video URL")
+    return run_video_analysis(normalize_url(url), "mini")
+
+# ======================================================
+# IMAGE ANALYSIS
+# ======================================================
+
+@app.post("/analyze/image")
+def analyze_image(req: ImageRequest):
+    return {
+        "status": "success",
+        "insight": "Image analysis placeholder (wire existing script here)"
+    }
+
+# ======================================================
+# INDUSTRY / TREND ANALYSIS
+# ======================================================
+
+@app.post("/analyze/industry")
+def analyze_industry(req: IndustryRequest):
+    return {
+        "status": "success",
+        "keywords": req.keywords,
+        "trend_summary": "Industry trend analysis placeholder"
+    }
+
+# ======================================================
+# CONTENT IDEA GENERATION
+# ======================================================
+
+@app.post("/generate/content-ideas")
+def generate_content(req: ContentIdeaRequest):
+    return {
+        "status": "success",
+        "ideas": [
+            "Hook-based reel using curiosity gap",
+            "Authority-style explainer with fast pacing"
+        ],
+        "brand_tone": req.brand_tone or "neutral"
+    }
+
+# ======================================================
+# BACKWARD-COMPAT ALIASES (n8n SAFE)
+# ======================================================
+
 @app.post("/get-one-video")
-def analyze_reel_alias(req: ReelAnalyzeRequest):
-    return analyze_reel_grade(req)
+@app.post("/analyze-reel/grade")
+def alias_reel(req: VideoRequest):
+    return reel_grade(req)
