@@ -21,36 +21,21 @@ AUDIO_PROMPT_VERSION = "v2.4-human-spoken-content"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
-    logging.error("GEMINI_API_KEY is not set")
+    raise RuntimeError("❌ GEMINI_API_KEY is not set")
 
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ============================
 # AUDIO + VIDEO INTELLIGENCE SCHEMA
 # ============================
 
 class DeepVideoAnalysis(BaseModel):
-    # 🔊 AUDIO CORE
-    audio_timeline_summary: str = Field(
-        ..., description="Chronological summary of audio segments and intent."
-    )
+    # 🔊 AUDIO
+    audio_timeline_summary: str
+    spoken_content_summary: str
 
-    spoken_content_summary: str = Field(
-        ..., description="Concise summary of what is being said overall."
-    )
-
-    what_people_are_saying: List[str] = Field(
-        ...,
-        description=(
-            "Paraphrased spoken lines written in natural language. "
-            "These should sound like what a human would say the speaker is saying. "
-            "Do NOT transcribe word-for-word."
-        )
-    )
-
-    key_spoken_phrases: List[str] = Field(
-        ..., description="Important spoken phrases or repeated ideas."
-    )
+    what_people_are_saying: List[str]
+    key_spoken_phrases: List[str]
 
     audio_hook_analysis: str
     audio_quality: str
@@ -70,24 +55,59 @@ class DeepVideoAnalysis(BaseModel):
     improvement_tip: str
 
 # ============================
-# HELPER FUNCTIONS
+# INSTAGRAM CDN SAFE DOWNLOADER
 # ============================
 
 def download_video_temp(video_url: str) -> Path:
+    """
+    Downloads MP4 from Instagram CDN or normal URLs.
+    Handles headers, redirects, and streaming safely.
+    """
+
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
 
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept": "*/*",
+        "Accept-Encoding": "identity",
+        "Connection": "keep-alive",
+
+        # 🔥 REQUIRED FOR INSTAGRAM
+        "Referer": "https://www.instagram.com/",
+        "Range": "bytes=0-",
+    }
+
     try:
-        with requests.get(video_url, stream=True, timeout=60) as r:
-            r.raise_for_status()
+        with requests.get(
+            video_url,
+            headers=headers,
+            stream=True,
+            timeout=60,
+            allow_redirects=True,
+        ) as r:
+
+            if r.status_code not in (200, 206):
+                raise RuntimeError(
+                    f"Failed to fetch video "
+                    f"(status={r.status_code})"
+                )
+
             with open(tmp_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
         return Path(tmp_path)
+
     except Exception as e:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        raise RuntimeError(f"Video download failed: {e}")
+        raise RuntimeError(f"Instagram CDN download failed: {e}")
 
 # ============================
 # MAIN ANALYZER
@@ -97,17 +117,14 @@ def analyze_reel(video_url: str) -> Dict[str, Any]:
     video_path = None
     gemini_file = None
 
-    if not client:
-        return {"status": "error", "message": "Gemini client not initialized"}
-
     try:
-        # 1. Download video
+        # 1. Download video (Instagram CDN safe)
         video_path = download_video_temp(video_url)
 
         # 2. Upload to Gemini
         gemini_file = client.files.upload(file=video_path)
 
-        # 3. Poll for processing
+        # 3. Poll until processed
         while gemini_file.state.name == "PROCESSING":
             time.sleep(2)
             gemini_file = client.files.get(name=gemini_file.name)
@@ -116,7 +133,7 @@ def analyze_reel(video_url: str) -> Dict[str, Any]:
             raise RuntimeError(gemini_file.error.message)
 
         # ============================
-        # 🔊 AUDIO-FIRST PROMPT
+        # AUDIO-FIRST PROMPT
         # ============================
 
         ANALYSIS_PROMPT = f"""
@@ -129,39 +146,38 @@ CRITICAL RULE:
 AUDIO is the PRIMARY signal. Visuals are SECONDARY.
 
 STEP 1 — AUDIO (MOST IMPORTANT):
-- Listen carefully to the full audio timeline
-- Break audio into intro, middle, and ending
-- Describe what is said, tone, emotion, and intent
+- Analyze full spoken audio timeline
+- Break into intro, middle, ending
+- Explain tone, intent, emotion
 
-VERY IMPORTANT:
-You MUST clearly answer:
-"What are people actually saying in this video?"
+IMPORTANT:
+Answer clearly:
+"What are people actually saying?"
 
-For the field `what_people_are_saying`:
-- Write 5–10 paraphrased spoken lines
-- Use natural human language
-- Each line should feel like a spoken thought
-- Do NOT transcribe word-for-word
+For `what_people_are_saying`:
+- 5–10 paraphrased spoken thoughts
+- Natural human language
+- NOT verbatim transcription
 
 STEP 2 — VISUALS:
-- Summarize visuals chronologically
-- Analyze first 3-second visual hook
-- Describe pacing and scene changes
+- Chronological visual summary
+- First 3-second hook analysis
+- Pacing and scene flow
 
 STEP 3 — AUDIO ↔ VIDEO:
-- Explain how audio supports or conflicts with visuals
+- How audio supports or conflicts visuals
 
 STEP 4 — STRATEGY:
-- Identify content purpose
-- Detect CTA
-- Score retention honestly
+- Content purpose
+- CTA detection
+- Honest retention score
 
 RULES:
 - No verbatim transcription
 - No fluff
-- Use marketing + psychology language
-- Respond ONLY in valid JSON
-- Strictly match the provided schema
+- Marketing + psychology language
+- Respond ONLY valid JSON
+- Match schema exactly
 - Prompt version: {AUDIO_PROMPT_VERSION}
 """
 
@@ -171,8 +187,8 @@ RULES:
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=DeepVideoAnalysis,
-                temperature=0.2
-            )
+                temperature=0.2,
+            ),
         )
 
         analysis_data = response.parsed or json.loads(response.text)
@@ -182,7 +198,7 @@ RULES:
             "video_url": video_url,
             "model": MODEL_NAME,
             "prompt_version": AUDIO_PROMPT_VERSION,
-            "data": analysis_data
+            "data": analysis_data,
         }
 
     except ClientError as e:
@@ -192,12 +208,14 @@ RULES:
         return {"status": "error", "message": str(e)}
 
     finally:
+        # Cleanup temp video
         if video_path and video_path.exists():
             try:
                 video_path.unlink()
             except Exception:
                 pass
 
+        # Cleanup Gemini file
         if gemini_file:
             try:
                 client.files.delete(name=gemini_file.name)
@@ -209,6 +227,8 @@ RULES:
 # ============================
 
 if __name__ == "__main__":
-    test_url = "https://www.w3schools.com/html/mov_bbb.mp4"
+    # ✅ Works with Instagram CDN URLs
+    test_url = "https://scontent.cdninstagram.com/v/t66.30100-16/XXXXXXXX.mp4"
+
     result = analyze_reel(test_url)
     print(json.dumps(result, indent=2, default=str))
