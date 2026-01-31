@@ -50,47 +50,21 @@ class DeepVideoAnalysis(BaseModel):
 # ============================
 # DOWNLOADERS
 # ============================
+from urllib.parse import urlparse
 
-def try_direct_download(url: str, out: Path) -> bool:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/122.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.instagram.com/",
-        "Range": "bytes=0-",
-    }
-
-    r = requests.get(
-        url,
-        headers=headers,
-        stream=True,
-        timeout=30,
-        allow_redirects=True,
-    )
-
-    if r.status_code not in (200, 206):
-        return False
-
-    with open(out, "wb") as f:
-        for chunk in r.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                f.write(chunk)
-
-    return True
+def is_instagram_page(url: str) -> bool:
+    return "instagram.com/reel" in url or "instagram.com/p/" in url
 
 
-def yt_dlp_download(url: str, out: Path):
+def yt_dlp_download_instagram_page(url: str, out: Path):
     cmd = [
         "yt-dlp",
-        "-f", "best",
-        "-o", str(out),
+        "-f", "bv*+ba/best",
+        "--merge-output-format", "mp4",
         "--no-playlist",
-        "--quiet",
+        "-o", str(out),
         url,
     ]
-
     subprocess.run(cmd, check=True)
 
 
@@ -100,18 +74,26 @@ def download_video_temp(video_url: str) -> Path:
     tmp_path = Path(tmp)
 
     try:
-        # 1️⃣ Try direct CDN
+        # ✅ CASE 1: Instagram REEL / POST URL
+        if is_instagram_page(video_url):
+            yt_dlp_download_instagram_page(video_url, tmp_path)
+            return tmp_path
+
+        # ⚠️ CASE 2: CDN URL → DO NOT USE yt-dlp
+        # Only attempt direct download
         if try_direct_download(video_url, tmp_path):
             return tmp_path
 
-        # 2️⃣ Fallback: yt-dlp (REAL FIX)
-        yt_dlp_download(video_url, tmp_path)
-        return tmp_path
+        raise RuntimeError(
+            "CDN URL expired or blocked. "
+            "Provide the original Instagram reel URL."
+        )
 
     except Exception as e:
         if tmp_path.exists():
             tmp_path.unlink()
         raise RuntimeError(f"Video download failed: {e}")
+
 
 # ============================
 # ANALYZER
