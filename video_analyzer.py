@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 # ============================
 
 MODEL_NAME = "gemini-2.0-flash"
-AUDIO_PROMPT_VERSION = "v2.3-audio-psychoacoustic"
+AUDIO_PROMPT_VERSION = "v2.4-human-spoken-content"
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
@@ -30,17 +30,38 @@ client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 # ============================
 
 class DeepVideoAnalysis(BaseModel):
-    audio_timeline_summary: str
-    spoken_content_summary: str
-    key_spoken_phrases: List[str]
+    # 🔊 AUDIO CORE
+    audio_timeline_summary: str = Field(
+        ..., description="Chronological summary of audio segments and intent."
+    )
+
+    spoken_content_summary: str = Field(
+        ..., description="Concise summary of what is being said overall."
+    )
+
+    what_people_are_saying: List[str] = Field(
+        ...,
+        description=(
+            "Paraphrased spoken lines written in natural language. "
+            "These should sound like what a human would say the speaker is saying. "
+            "Do NOT transcribe word-for-word."
+        )
+    )
+
+    key_spoken_phrases: List[str] = Field(
+        ..., description="Important spoken phrases or repeated ideas."
+    )
+
     audio_hook_analysis: str
     audio_quality: str
     emotional_audio_impact: str
 
+    # 🎥 VIDEO
     video_timeline_summary: str
     visual_hook_analysis: str
     visual_pacing: str
 
+    # 🧠 STRATEGY
     audio_visual_sync: str
     content_purpose: str
     call_to_action_detected: str
@@ -95,58 +116,55 @@ def analyze_reel(video_url: str) -> Dict[str, Any]:
             raise RuntimeError(gemini_file.error.message)
 
         # ============================
-        # 🔊 AUDIO-FIRST MULTIMODAL PROMPT
+        # 🔊 AUDIO-FIRST PROMPT
         # ============================
 
         ANALYSIS_PROMPT = f"""
 You are a senior expert in:
 - Short-form video audio psychology
-- Viral marketing hooks
-- Audience retention mechanics
+- Viral content hooks
+- Audience retention analysis
 
-CRITICAL INSTRUCTION:
+CRITICAL RULE:
 AUDIO is the PRIMARY signal. Visuals are SECONDARY.
 
-Step 1 — AUDIO ANALYSIS (MOST IMPORTANT):
-- Listen carefully to the entire audio timeline
-- Break it into logical segments (intro, middle, ending)
-- For each segment describe:
-  • What is being said or heard
-  • Tone, emotion, and energy
-  • Psychological intent (hook, tension, authority, CTA)
+STEP 1 — AUDIO (MOST IMPORTANT):
+- Listen carefully to the full audio timeline
+- Break audio into intro, middle, and ending
+- Describe what is said, tone, emotion, and intent
 
-Focus deeply on:
-- Voice tone and confidence
-- Speaking speed and urgency
-- Emotional shifts
-- Curiosity gaps and promises of value
-- Scroll-stopping strength of the FIRST 3 SECONDS
+VERY IMPORTANT:
+You MUST clearly answer:
+"What are people actually saying in this video?"
 
-Step 2 — VIDEO ANALYSIS:
-- Summarize visuals chronologically
-- Identify visual hooks in the first 3 seconds
-- Describe pacing, motion, text overlays, and transitions
-
-Step 3 — AUDIO ↔ VIDEO SYNC:
-- Explain how audio reinforces visuals
-- Note any mismatches or missed opportunities
-
-Step 4 — STRATEGIC EVALUATION:
-- Identify content purpose
-- Detect CTA (spoken or visual)
-- Judge retention potential honestly
-
-Rules:
+For the field `what_people_are_saying`:
+- Write 5–10 paraphrased spoken lines
+- Use natural human language
+- Each line should feel like a spoken thought
 - Do NOT transcribe word-for-word
-- Summarize intelligently
-- Be precise, not generic
+
+STEP 2 — VISUALS:
+- Summarize visuals chronologically
+- Analyze first 3-second visual hook
+- Describe pacing and scene changes
+
+STEP 3 — AUDIO ↔ VIDEO:
+- Explain how audio supports or conflicts with visuals
+
+STEP 4 — STRATEGY:
+- Identify content purpose
+- Detect CTA
+- Score retention honestly
+
+RULES:
+- No verbatim transcription
+- No fluff
 - Use marketing + psychology language
 - Respond ONLY in valid JSON
 - Strictly match the provided schema
 - Prompt version: {AUDIO_PROMPT_VERSION}
 """
 
-        # 4. Run Gemini analysis
         response = client.models.generate_content(
             model=MODEL_NAME,
             contents=[gemini_file, ANALYSIS_PROMPT],
