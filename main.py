@@ -8,13 +8,11 @@ import traceback
 # CORE ANALYSIS MODULES
 # ============================
 
-# 🔥 FIXED IMPORT
 from instagram_analyzer import analyze_100_accounts as analyze_profiles
-
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
-from mini_video_analyzer import analyze_reel as analyze_reel_mini
+# ❌ REMOVED mini_video_analyzer
 from video_analyzer import analyze_reel as analyze_reel_full
 
 from top_posts import get_top_posts
@@ -41,7 +39,7 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.6.2",
+    version="4.6.3",
     description="Stateless Instagram intelligence backend (ranking, media, AI analysis)"
 )
 
@@ -125,7 +123,6 @@ def home():
             "profiles": ["/analyze", "/top-posts"],
             "media": [
                 "/analyze-image",
-                "/analyze/reel/mini",
                 "/analyze/reel/full",
                 "/analyze-reel-audio"
             ],
@@ -174,19 +171,6 @@ def analyze_industry_api(req: IndustryAnalyzeRequest):
 @app.post("/analyze-image", tags=["media"])
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
-
-
-@app.post("/analyze/reel/mini", tags=["media"])
-def analyze_reel_mini_api(req: ReelAnalyzeRequest):
-    try:
-        raw_url = extract_any_url(req)
-        if not raw_url:
-            return error_response("No reel URL provided")
-
-        return analyze_reel_mini(normalize_url(raw_url))
-
-    except Exception:
-        return error_response("Mini video analyzer failed", traceback.format_exc())
 
 
 @app.post("/analyze/reel/full", tags=["media"])
