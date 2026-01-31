@@ -2,19 +2,17 @@ import os
 import time
 import json
 import logging
-import traceback
 import tempfile
 import requests
 from pathlib import Path
-from typing import Optional, List, Any
+from typing import Optional, List
 from urllib.parse import urlparse, urlunparse
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from google import genai
 from google.genai import types
-from supabase import create_client, Client
 
 # ============================
 # APP INIT
@@ -22,7 +20,7 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.7.0",
+    version="4.8.0",
     description="Instagram AI Video Grader (Gemini 2.0 Flash – Audio + Video)"
 )
 
@@ -33,14 +31,10 @@ app = FastAPI(
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = "gemini-2.0-flash"
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+if not GEMINI_API_KEY:
+    logging.error("GEMINI_API_KEY not set")
 
 gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-supabase: Optional[Client] = (
-    create_client(SUPABASE_URL, SUPABASE_KEY)
-    if SUPABASE_URL and SUPABASE_KEY else None
-)
 
 # ============================
 # HELPERS
@@ -53,6 +47,7 @@ def normalize_url(url: str) -> str:
 def download_video_temp(video_url: str) -> Path:
     fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(fd)
+
     try:
         with requests.get(video_url, stream=True, timeout=60) as r:
             r.raise_for_status()
@@ -60,10 +55,10 @@ def download_video_temp(video_url: str) -> Path:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         return Path(tmp_path)
-    except Exception:
+    except Exception as e:
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
-        raise
+        raise RuntimeError(f"Video download failed: {e}")
 
 # ============================
 # REQUEST MODELS
@@ -78,7 +73,7 @@ def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
     return req.video_url or req.media_url or req.url
 
 # ============================
-# AUDIO + VIDEO SCHEMA
+# RESPONSE SCHEMA
 # ============================
 
 class VideoGradeAV(BaseModel):
@@ -101,43 +96,40 @@ class VideoGradeAV(BaseModel):
     improvement_tip: str
 
 # ============================
-# ROUTES
+# BASIC ROUTES
 # ============================
 
 @app.get("/")
-def home():
+def root():
     return {
         "status": "ok",
         "service": "InstaEye Backend",
         "model": MODEL_NAME
     }
 
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
 # ============================
-# AI VIDEO GRADER (FIXED)
+# CORE ANALYSIS LOGIC
 # ============================
 
-@app.post("/analyze/reel/grade")
-def analyze_reel_grader_api(req: ReelAnalyzeRequest):
+def run_reel_analysis(url: str):
     video_path = None
     gemini_file = None
 
+    if not gemini_client:
+        raise HTTPException(status_code=500, detail="Gemini client not initialized")
+
     try:
-        raw_url = extract_any_url(req)
-        if not raw_url:
-            return {"status": "error", "message": "No video URL provided"}
-
-        if not gemini_client:
-            return {"status": "error", "message": "Gemini client not initialized"}
-
-        url = normalize_url(raw_url)
-
-        # 1. Download
+        # Download
         video_path = download_video_temp(url)
 
-        # 2. Upload
+        # Upload
         gemini_file = gemini_client.files.upload(file=video_path)
 
-        # 3. Wait for processing
+        # Wait for processing
         while gemini_file.state.name == "PROCESSING":
             time.sleep(2)
             gemini_file = gemini_client.files.get(name=gemini_file.name)
@@ -145,30 +137,31 @@ def analyze_reel_grader_api(req: ReelAnalyzeRequest):
         if gemini_file.state.name == "FAILED":
             raise RuntimeError(gemini_file.error.message)
 
-        # 4. AUDIO + VIDEO ANALYSIS
+        # Gemini analysis
         response = gemini_client.models.generate_content(
             model=MODEL_NAME,
             contents=[
                 gemini_file,
                 (
-                    "LISTEN to the AUDIO FIRST.\n\n"
-                    "AUDIO TASKS:\n"
-                    "- Break audio into chronological segments\n"
-                    "- Summarize what is being said\n"
+                    "AUDIO IS PRIMARY.\n\n"
+                    "Analyze the video as follows:\n\n"
+                    "AUDIO:\n"
+                    "- Break audio into intro, middle, end\n"
+                    "- Summarize what people are saying (paraphrased)\n"
                     "- Identify key spoken phrases\n"
-                    "- Analyze first 3 seconds of audio as a hook\n"
-                    "- Describe emotional tone and delivery\n\n"
-                    "VIDEO TASKS:\n"
+                    "- Analyze first 3 seconds as audio hook\n"
+                    "- Describe emotional delivery\n\n"
+                    "VIDEO:\n"
                     "- Summarize visuals over time\n"
                     "- Analyze first 3 seconds visually\n"
                     "- Describe pacing and editing\n\n"
-                    "SYNC & STRATEGY:\n"
-                    "- Explain how audio and visuals work together\n"
+                    "STRATEGY:\n"
+                    "- Explain audio-visual sync\n"
                     "- Identify content purpose and CTA\n"
                     "- Score retention from 1–10\n"
-                    "- Suggest one improvement\n\n"
+                    "- Give one improvement tip\n\n"
                     "Do NOT transcribe word-for-word.\n"
-                    "Respond strictly using the JSON schema."
+                    "Respond ONLY in valid JSON."
                 )
             ],
             config=types.GenerateContentConfig(
@@ -178,21 +171,7 @@ def analyze_reel_grader_api(req: ReelAnalyzeRequest):
             )
         )
 
-        analysis_data = response.parsed or json.loads(response.text)
-
-        return {
-            "status": "success",
-            "video_url": url,
-            "model": MODEL_NAME,
-            "data": analysis_data
-        }
-
-    except Exception:
-        return {
-            "status": "error",
-            "message": "Video grading failed",
-            "trace": traceback.format_exc()
-        }
+        return response.parsed or json.loads(response.text)
 
     finally:
         if video_path and video_path.exists():
@@ -201,8 +180,39 @@ def analyze_reel_grader_api(req: ReelAnalyzeRequest):
             except:
                 pass
 
-        if gemini_file and gemini_client:
+        if gemini_file:
             try:
                 gemini_client.files.delete(name=gemini_file.name)
             except:
                 pass
+
+# ============================
+# PRIMARY ENDPOINT
+# ============================
+
+@app.post("/analyze/reel/grade")
+def analyze_reel_grade(req: ReelAnalyzeRequest):
+    raw_url = extract_any_url(req)
+    if not raw_url:
+        raise HTTPException(status_code=400, detail="No video URL provided")
+
+    url = normalize_url(raw_url)
+    data = run_reel_analysis(url)
+
+    return {
+        "status": "success",
+        "video_url": url,
+        "model": MODEL_NAME,
+        "data": data
+    }
+
+# ============================
+# 🔁 BACKWARD-COMPAT ALIAS ROUTES
+# ============================
+
+@app.post("/analyze/reel")
+@app.post("/analyze/video")
+@app.post("/analyze-reel/grade")
+@app.post("/get-one-video")
+def analyze_reel_alias(req: ReelAnalyzeRequest):
+    return analyze_reel_grade(req)
