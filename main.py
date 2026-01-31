@@ -1,20 +1,43 @@
-import os
-import time
-import json
-import logging
-import traceback
-import tempfile
-import requests
-from pathlib import Path
+from fastapi import FastAPI
+from pydantic import BaseModel
 from typing import Optional, List, Any
 from urllib.parse import urlparse, urlunparse
+import traceback
 
-from fastapi import FastAPI
-from pydantic import BaseModel, Field
+# ----------------------------
+# Core analysis modules
+# ----------------------------
 
-from google import genai
-from google.genai import types
-from supabase import create_client, Client
+from instagram_analyzer import analyze_profiles
+from content_ideas import generate_content
+from image_analyzer import analyze_image
+
+# 🔥 BOTH video analyzers (aliased clearly)
+from mini_video_analyzer import analyze_reel as analyze_reel_mini
+from video_analyzer import analyze_reel as analyze_reel_full
+
+from top_posts import get_top_posts
+from trend_engine import analyze_industry
+from audio_pipeline import process_audio
+from media_splitter import router as split_router
+
+# ----------------------------
+# Audio Transcriber
+# ----------------------------
+
+from audio_transcriber import router as audio_router
+
+# ----------------------------
+# Instagram Discovery + Ranking (ASYNC)
+# ----------------------------
+
+from instagram_finder import router as instagram_finder_router
+
+# ----------------------------
+# CDN Resolver
+# ----------------------------
+
+from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 # ============================
 # APP INIT
@@ -22,25 +45,60 @@ from supabase import create_client, Client
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.7.0",
-    description="Instagram AI Video Grader (Gemini 2.0 Flash – Audio + Video)"
+    version="4.5.0",
+    description="Stateless Instagram intelligence backend (multi-analyzer, async ranking)"
 )
 
 # ============================
-# CONFIGURATION
+# ROUTERS
 # ============================
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = "gemini-2.0-flash"
+app.include_router(split_router)
+app.include_router(audio_router)
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+# 🔥 exposes:
+# - /instagram/discover  (if enabled)
+# - /instagram/rank      (500 accounts → top 100, async)
+app.include_router(instagram_finder_router)
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-supabase: Optional[Client] = (
-    create_client(SUPABASE_URL, SUPABASE_KEY)
-    if SUPABASE_URL and SUPABASE_KEY else None
-)
+# ============================
+# REQUEST MODELS
+# ============================
+
+class AnalyzeProfilesRequest(BaseModel):
+    usernames: List[str]
+
+
+class ContentIdeasRequest(BaseModel):
+    data: List[Any]
+
+
+class ImageAnalyzeRequest(BaseModel):
+    media_url: str
+
+
+class ReelAnalyzeRequest(BaseModel):
+    video_url: Optional[str] = None
+    media_url: Optional[str] = None
+    url: Optional[str] = None
+
+
+class ReelAudioRequest(BaseModel):
+    media_url: str
+
+
+class TopPostsRequest(BaseModel):
+    username: str
+    limit: int = 5
+
+
+class IndustryAnalyzeRequest(BaseModel):
+    keywords: List[str]
+    news_api_key: Optional[str] = None
+
+
+class ReelResolveRequest(BaseModel):
+    url: str
 
 # ============================
 # HELPERS
@@ -50,159 +108,145 @@ def normalize_url(url: str) -> str:
     parsed = urlparse(url.strip())
     return urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
 
-def download_video_temp(video_url: str) -> Path:
-    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(fd)
-    try:
-        with requests.get(video_url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=8192):
-                    f.write(chunk)
-        return Path(tmp_path)
-    except Exception:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
 
-# ============================
-# REQUEST MODELS
-# ============================
-
-class ReelAnalyzeRequest(BaseModel):
-    video_url: Optional[str] = None
-    media_url: Optional[str] = None
-    url: Optional[str] = None
-
-def extract_any_url(req: ReelAnalyzeRequest) -> Optional[str]:
+def extract_any_url(req) -> Optional[str]:
     return req.video_url or req.media_url or req.url
 
-# ============================
-# AUDIO + VIDEO SCHEMA
-# ============================
 
-class VideoGradeAV(BaseModel):
-    audio_timeline_summary: str
-    spoken_content_summary: str
-    key_spoken_phrases: List[str]
-    audio_hook_analysis: str
-    audio_quality: str
-    emotional_audio_impact: str
-
-    video_timeline_summary: str
-    visual_hook_analysis: str
-    visual_pacing: str
-
-    audio_visual_sync: str
-    content_purpose: str
-    call_to_action_detected: str
-
-    retention_score: int
-    improvement_tip: str
+def error_response(message: str, trace: Optional[str] = None):
+    payload = {"status": "error", "message": message}
+    if trace:
+        payload["trace"] = trace
+    return payload
 
 # ============================
-# ROUTES
+# SYSTEM
 # ============================
 
-@app.get("/")
+@app.get("/", tags=["system"])
 def home():
     return {
         "status": "ok",
-        "service": "InstaEye Backend",
-        "model": MODEL_NAME
+        "service": "InstaEye backend",
+        "version": app.version,
+        "routers": {
+            "instagram": [
+                "/instagram/rank"
+            ],
+            "media": [
+                "/analyze-image",
+                "/analyze/reel/mini",
+                "/analyze/reel/full",
+                "/analyze-reel-audio"
+            ],
+            "resolver": [
+                "/resolve/reel"
+            ]
+        },
+        "modules": [
+            "profile-analysis",
+            "content-ideas",
+            "image-analysis",
+            "reel-mini-analyzer",
+            "reel-full-analyzer",
+            "audio-transcription",
+            "cdn-resolver",
+            "instagram-discovery",
+            "instagram-ranking (async)"
+        ]
     }
 
 # ============================
-# AI VIDEO GRADER (FIXED)
+# PROFILE & CONTENT
 # ============================
 
-@app.post("/analyze/reel/grade")
-def analyze_reel_grader_api(req: ReelAnalyzeRequest):
-    video_path = None
-    gemini_file = None
+@app.post("/analyze", tags=["profiles"])
+def analyze_profile_api(req: AnalyzeProfilesRequest):
+    return analyze_profiles(req.usernames)
 
+
+@app.post("/generate-content-ideas", tags=["content"])
+def generate_ideas_api(req: ContentIdeasRequest):
+    return generate_content(req.data)
+
+
+@app.post("/top-posts", tags=["profiles"])
+def top_posts_api(req: TopPostsRequest):
+    return get_top_posts(req.username, req.limit)
+
+
+@app.post("/analyze-industry", tags=["industry"])
+def analyze_industry_api(req: IndustryAnalyzeRequest):
+    return analyze_industry(req.keywords, req.news_api_key)
+
+# ============================
+# MEDIA ANALYSIS
+# ============================
+
+@app.post("/analyze-image", tags=["media"])
+def analyze_image_api(req: ImageAnalyzeRequest):
+    return analyze_image(req.media_url)
+
+# ----------------------------
+# MINI VIDEO ANALYZER
+# ----------------------------
+
+@app.post("/analyze/reel/mini", tags=["media"])
+def analyze_reel_mini_api(req: ReelAnalyzeRequest):
     try:
         raw_url = extract_any_url(req)
         if not raw_url:
-            return {"status": "error", "message": "No video URL provided"}
+            return error_response("No reel URL provided")
 
-        if not gemini_client:
-            return {"status": "error", "message": "Gemini client not initialized"}
-
-        url = normalize_url(raw_url)
-
-        # 1. Download
-        video_path = download_video_temp(url)
-
-        # 2. Upload
-        gemini_file = gemini_client.files.upload(file=video_path)
-
-        # 3. Wait for processing
-        while gemini_file.state.name == "PROCESSING":
-            time.sleep(2)
-            gemini_file = gemini_client.files.get(name=gemini_file.name)
-
-        if gemini_file.state.name == "FAILED":
-            raise RuntimeError(gemini_file.error.message)
-
-        # 4. AUDIO + VIDEO ANALYSIS
-        response = gemini_client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[
-                gemini_file,
-                (
-                    "LISTEN to the AUDIO FIRST.\n\n"
-                    "AUDIO TASKS:\n"
-                    "- Break audio into chronological segments\n"
-                    "- Summarize what is being said\n"
-                    "- Identify key spoken phrases\n"
-                    "- Analyze first 3 seconds of audio as a hook\n"
-                    "- Describe emotional tone and delivery\n\n"
-                    "VIDEO TASKS:\n"
-                    "- Summarize visuals over time\n"
-                    "- Analyze first 3 seconds visually\n"
-                    "- Describe pacing and editing\n\n"
-                    "SYNC & STRATEGY:\n"
-                    "- Explain how audio and visuals work together\n"
-                    "- Identify content purpose and CTA\n"
-                    "- Score retention from 1–10\n"
-                    "- Suggest one improvement\n\n"
-                    "Do NOT transcribe word-for-word.\n"
-                    "Respond strictly using the JSON schema."
-                )
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=VideoGradeAV,
-                temperature=0.2
-            )
-        )
-
-        analysis_data = response.parsed or json.loads(response.text)
-
-        return {
-            "status": "success",
-            "video_url": url,
-            "model": MODEL_NAME,
-            "data": analysis_data
-        }
+        return analyze_reel_mini(normalize_url(raw_url))
 
     except Exception:
-        return {
-            "status": "error",
-            "message": "Video grading failed",
-            "trace": traceback.format_exc()
-        }
+        return error_response(
+            "Mini video analyzer failed",
+            traceback.format_exc()
+        )
 
-    finally:
-        if video_path and video_path.exists():
-            try:
-                video_path.unlink()
-            except:
-                pass
+# ----------------------------
+# FULL VIDEO ANALYZER
+# ----------------------------
 
-        if gemini_file and gemini_client:
-            try:
-                gemini_client.files.delete(name=gemini_file.name)
-            except:
-                pass
+@app.post("/analyze/reel/full", tags=["media"])
+def analyze_reel_full_api(req: ReelAnalyzeRequest):
+    try:
+        raw_url = extract_any_url(req)
+        if not raw_url:
+            return error_response("No reel URL provided")
+
+        return analyze_reel_full(normalize_url(raw_url))
+
+    except Exception:
+        return error_response(
+            "Full video analyzer failed",
+            traceback.format_exc()
+        )
+
+# ----------------------------
+# AUDIO ANALYSIS
+# ----------------------------
+
+@app.post("/analyze-reel-audio", tags=["media"])
+def analyze_reel_audio_api(req: ReelAudioRequest):
+    return process_audio(req.media_url)
+
+# ============================
+# CDN RESOLVER
+# ============================
+
+@app.post("/resolve/reel", tags=["resolver"])
+def resolve_reel_api(req: ReelResolveRequest):
+    try:
+        return resolve_instagram_cdn(normalize_url(req.url))
+
+    except CDNResolveError as e:
+        return error_response("CDN resolution failed", str(e))
+
+    except Exception:
+        return error_response(
+            "Unexpected resolver error",
+            traceback.format_exc()
+        )
