@@ -8,7 +8,9 @@ import traceback
 # CORE ANALYSIS MODULES
 # ============================
 
-from instagram_analyzer import analyze_profiles
+# 🔥 FIXED IMPORT
+from instagram_analyzer import analyze_100_accounts as analyze_profiles
+
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
@@ -39,7 +41,7 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.6.1",
+    version="4.6.2",
     description="Stateless Instagram intelligence backend (ranking, media, AI analysis)"
 )
 
@@ -120,25 +122,15 @@ def home():
         "service": "InstaEye backend",
         "version": app.version,
         "routes": {
-            "instagram": [
-                "/instagram/rank"
-            ],
-            "profiles": [
-                "/analyze",
-                "/top-posts"
-            ],
+            "profiles": ["/analyze", "/top-posts"],
             "media": [
                 "/analyze-image",
                 "/analyze/reel/mini",
                 "/analyze/reel/full",
                 "/analyze-reel-audio"
             ],
-            "industry": [
-                "/analyze-industry"
-            ],
-            "resolver": [
-                "/resolve/reel"
-            ]
+            "industry": ["/analyze-industry"],
+            "resolver": ["/resolve/reel"]
         }
     }
 
@@ -153,6 +145,11 @@ def health():
 
 @app.post("/analyze", tags=["profiles"])
 def analyze_profile_api(req: AnalyzeProfilesRequest):
+    """
+    Scans up to 100 accounts
+    Filters last 7 days
+    Returns Top 30 posts per account
+    """
     return analyze_profiles(req.usernames)
 
 
