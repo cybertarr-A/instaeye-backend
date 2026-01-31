@@ -4,38 +4,33 @@ from typing import Optional, List, Any
 from urllib.parse import urlparse, urlunparse
 import traceback
 
-# ----------------------------
-# Core analysis modules
-# ----------------------------
+# ============================
+# CORE ANALYSIS MODULES
+# ============================
 
 from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
-# 🔥 BOTH video analyzers (aliased clearly)
+# Video analyzers (explicit aliases)
 from mini_video_analyzer import analyze_reel as analyze_reel_mini
 from video_analyzer import analyze_reel as analyze_reel_full
 
 from top_posts import get_top_posts
 from trend_engine import analyze_industry
 from audio_pipeline import process_audio
+
+# ============================
+# ROUTERS
+# ============================
+
 from media_splitter import router as split_router
-
-# ----------------------------
-# Audio Transcriber
-# ----------------------------
-
 from audio_transcriber import router as audio_router
-
-# ----------------------------
-# Instagram Discovery + Ranking (ASYNC)
-# ----------------------------
-
 from instagram_finder import router as instagram_finder_router
 
-# ----------------------------
-# CDN Resolver
-# ----------------------------
+# ============================
+# CDN RESOLVER
+# ============================
 
 from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
@@ -45,20 +40,16 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.5.0",
-    description="Stateless Instagram intelligence backend (multi-analyzer, async ranking)"
+    version="4.6.0",
+    description="Stateless Instagram intelligence backend (discovery, ranking, media, AI analysis)"
 )
 
 # ============================
-# ROUTERS
+# ROUTER REGISTRATION
 # ============================
 
 app.include_router(split_router)
 app.include_router(audio_router)
-
-# 🔥 exposes:
-# - /instagram/discover  (if enabled)
-# - /instagram/rank      (500 accounts → top 100, async)
 app.include_router(instagram_finder_router)
 
 # ============================
@@ -120,7 +111,7 @@ def error_response(message: str, trace: Optional[str] = None):
     return payload
 
 # ============================
-# SYSTEM
+# SYSTEM ROUTE
 # ============================
 
 @app.get("/", tags=["system"])
@@ -129,9 +120,14 @@ def home():
         "status": "ok",
         "service": "InstaEye backend",
         "version": app.version,
-        "routers": {
+        "routes": {
             "instagram": [
+                "/instagram/discover",
                 "/instagram/rank"
+            ],
+            "profiles": [
+                "/analyze",
+                "/top-posts"
             ],
             "media": [
                 "/analyze-image",
@@ -139,21 +135,13 @@ def home():
                 "/analyze/reel/full",
                 "/analyze-reel-audio"
             ],
+            "industry": [
+                "/analyze-industry"
+            ],
             "resolver": [
                 "/resolve/reel"
             ]
-        },
-        "modules": [
-            "profile-analysis",
-            "content-ideas",
-            "image-analysis",
-            "reel-mini-analyzer",
-            "reel-full-analyzer",
-            "audio-transcription",
-            "cdn-resolver",
-            "instagram-discovery",
-            "instagram-ranking (async)"
-        ]
+        }
     }
 
 # ============================
