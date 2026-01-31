@@ -12,7 +12,6 @@ from instagram_analyzer import analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
-# Video analyzers (explicit aliases)
 from mini_video_analyzer import analyze_reel as analyze_reel_mini
 from video_analyzer import analyze_reel as analyze_reel_full
 
@@ -40,8 +39,8 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.6.0",
-    description="Stateless Instagram intelligence backend (discovery, ranking, media, AI analysis)"
+    version="4.6.1",
+    description="Stateless Instagram intelligence backend (ranking, media, AI analysis)"
 )
 
 # ============================
@@ -111,7 +110,7 @@ def error_response(message: str, trace: Optional[str] = None):
     return payload
 
 # ============================
-# SYSTEM ROUTE
+# SYSTEM ROUTES
 # ============================
 
 @app.get("/", tags=["system"])
@@ -122,7 +121,6 @@ def home():
         "version": app.version,
         "routes": {
             "instagram": [
-                "/instagram/discover",
                 "/instagram/rank"
             ],
             "profiles": [
@@ -143,6 +141,11 @@ def home():
             ]
         }
     }
+
+
+@app.get("/health", tags=["system"])
+def health():
+    return {"status": "healthy"}
 
 # ============================
 # PROFILE & CONTENT
@@ -175,9 +178,6 @@ def analyze_industry_api(req: IndustryAnalyzeRequest):
 def analyze_image_api(req: ImageAnalyzeRequest):
     return analyze_image(req.media_url)
 
-# ----------------------------
-# MINI VIDEO ANALYZER
-# ----------------------------
 
 @app.post("/analyze/reel/mini", tags=["media"])
 def analyze_reel_mini_api(req: ReelAnalyzeRequest):
@@ -189,14 +189,8 @@ def analyze_reel_mini_api(req: ReelAnalyzeRequest):
         return analyze_reel_mini(normalize_url(raw_url))
 
     except Exception:
-        return error_response(
-            "Mini video analyzer failed",
-            traceback.format_exc()
-        )
+        return error_response("Mini video analyzer failed", traceback.format_exc())
 
-# ----------------------------
-# FULL VIDEO ANALYZER
-# ----------------------------
 
 @app.post("/analyze/reel/full", tags=["media"])
 def analyze_reel_full_api(req: ReelAnalyzeRequest):
@@ -208,14 +202,8 @@ def analyze_reel_full_api(req: ReelAnalyzeRequest):
         return analyze_reel_full(normalize_url(raw_url))
 
     except Exception:
-        return error_response(
-            "Full video analyzer failed",
-            traceback.format_exc()
-        )
+        return error_response("Full video analyzer failed", traceback.format_exc())
 
-# ----------------------------
-# AUDIO ANALYSIS
-# ----------------------------
 
 @app.post("/analyze-reel-audio", tags=["media"])
 def analyze_reel_audio_api(req: ReelAudioRequest):
@@ -234,7 +222,4 @@ def resolve_reel_api(req: ReelResolveRequest):
         return error_response("CDN resolution failed", str(e))
 
     except Exception:
-        return error_response(
-            "Unexpected resolver error",
-            traceback.format_exc()
-        )
+        return error_response("Unexpected resolver error", traceback.format_exc())
