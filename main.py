@@ -12,7 +12,6 @@ from instagram_analyzer import analyze_100_accounts as analyze_profiles
 from content_ideas import generate_content
 from image_analyzer import analyze_image
 
-# ❌ REMOVED mini_video_analyzer
 from video_analyzer import analyze_reel as analyze_reel_full
 
 from top_posts import get_top_posts
@@ -28,10 +27,11 @@ from audio_transcriber import router as audio_router
 from instagram_finder import router as instagram_finder_router
 
 # ============================
-# CDN RESOLVER
+# CDN RESOLVER + UPLOADER
 # ============================
 
 from cdn_resolver import resolve_instagram_cdn, CDNResolveError
+from instagram_cdn_uploader import upload_instagram_video_cdn
 
 # ============================
 # APP INIT
@@ -39,7 +39,7 @@ from cdn_resolver import resolve_instagram_cdn, CDNResolveError
 
 app = FastAPI(
     title="InstaEye Backend",
-    version="4.6.3",
+    version="4.6.4",
     description="Stateless Instagram intelligence backend (ranking, media, AI analysis)"
 )
 
@@ -90,6 +90,11 @@ class IndustryAnalyzeRequest(BaseModel):
 class ReelResolveRequest(BaseModel):
     url: str
 
+
+class ReelResolveUploadRequest(BaseModel):
+    url: str
+    folder: Optional[str] = "reels"
+
 # ============================
 # HELPERS
 # ============================
@@ -127,7 +132,10 @@ def home():
                 "/analyze-reel-audio"
             ],
             "industry": ["/analyze-industry"],
-            "resolver": ["/resolve/reel"]
+            "resolver": [
+                "/resolve/reel",
+                "/resolve/reel/upload"
+            ]
         }
     }
 
@@ -183,7 +191,10 @@ def analyze_reel_full_api(req: ReelAnalyzeRequest):
         return analyze_reel_full(normalize_url(raw_url))
 
     except Exception:
-        return error_response("Full video analyzer failed", traceback.format_exc())
+        return error_response(
+            "Full video analyzer failed",
+            traceback.format_exc()
+        )
 
 
 @app.post("/analyze-reel-audio", tags=["media"])
@@ -191,7 +202,7 @@ def analyze_reel_audio_api(req: ReelAudioRequest):
     return process_audio(req.media_url)
 
 # ============================
-# CDN RESOLVER
+# CDN RESOLVER ONLY
 # ============================
 
 @app.post("/resolve/reel", tags=["resolver"])
@@ -203,4 +214,51 @@ def resolve_reel_api(req: ReelResolveRequest):
         return error_response("CDN resolution failed", str(e))
 
     except Exception:
-        return error_response("Unexpected resolver error", traceback.format_exc())
+        return error_response(
+            "Unexpected resolver error",
+            traceback.format_exc()
+        )
+
+# ============================
+# CDN RESOLVE + SUPABASE UPLOAD
+# ============================
+
+@app.post("/resolve/reel/upload", tags=["resolver"])
+def resolve_and_upload_reel_api(req: ReelResolveUploadRequest):
+    """
+    Resolve Instagram Reel CDN
+    Download video
+    Upload to Supabase
+    Return Supabase CDN URL
+    """
+    try:
+        normalized_url = normalize_url(req.url)
+
+        # Step 1: Resolve Instagram CDN
+        resolved = resolve_instagram_cdn(normalized_url)
+
+        cdn_url = resolved.get("video_cdn_url") or resolved.get("cdn_url")
+        if not cdn_url:
+            return error_response("No video CDN URL found")
+
+        # Step 2: Upload to Supabase
+        uploaded = upload_instagram_video_cdn(
+            cdn_url=cdn_url,
+            folder=req.folder
+        )
+
+        return {
+            "status": "success",
+            "instagram_url": normalized_url,
+            "instagram_cdn": cdn_url,
+            "supabase": uploaded
+        }
+
+    except CDNResolveError as e:
+        return error_response("CDN resolution failed", str(e))
+
+    except Exception:
+        return error_response(
+            "Resolve + upload failed",
+            traceback.format_exc()
+        )
